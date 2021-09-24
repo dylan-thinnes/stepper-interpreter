@@ -24,6 +24,7 @@ extra-source-files: CHANGELOG.md
 library
     exposed-modules:
         Evaluator,
+        Indexing,
         Lift
 
     -- Modules included in this library but not exported.
@@ -33,7 +34,12 @@ library
     -- other-extensions:
     build-depends:
         base ^>=4.14.2.0,
+        adjunctions,
         containers,
+        distributive,
+        lens,
+        keys,
+        recursion-schemes,
         template-haskell
 
     hs-source-dirs:   src
