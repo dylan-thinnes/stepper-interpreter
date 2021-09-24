@@ -189,69 +189,18 @@ data MatchResult
   = MatchReduceError String
   | SuccessfulMatch [(Name, Exp)]
 
-data InfixArgIndex = LArg | RArg
+deriving instance Show a => Show (PatF a)
+deriving instance Generic1 PatF
+type instance Key PatF = Key (Rep1 PatF)
+instance Keyed PatF where
+  mapWithKey g fa = to1 $ mapWithKey g (from1 fa)
+instance Adjustable PatF where
+  adjust g k fa = mapWithKey (\k' x -> if k == k' then g x else x) fa
 
-data PatFI
-  = LitPFI Void
-  | VarPFI Void
-  | TupPFI Int
-  | UnboxedTupPFI Int
-  | UnboxedSumPFI
-  | ConPFI Int
-  | InfixPFI InfixArgIndex
-  | UInfixPFI InfixArgIndex
-  | ParensPFI
-  | TildePFI
-  | BangPFI
-  | AsPFI
-  | WildPFI Void
-  | RecPFI Int
-  | ListPFI Int
-  | SigPFI
-  | ViewPFI
-
-getPat :: [PatFI] -> Pat -> Maybe Pat
-getPat [] pat = Just pat
-getPat (i:rest) pat = getPat rest =<< getPatF i (R.project pat)
-
-modPat :: [PatFI] -> Pat -> (Pat -> Pat) -> Pat
-modPat is pat f = go is pat
-  where
-    go [] pat = f pat
-    go (i:rest) pat = R.embed $ modPatF i (R.project pat) (go rest)
-
-getPatF :: PatFI -> PatF a -> Maybe a
-getPatF (TupPFI i) (TupPF ps) = Just $ ps !! i
-getPatF (UnboxedTupPFI i) (UnboxedTupPF ps) = Just $ ps !! i
-getPatF (ConPFI i) (ConPF _ ps) = Just $ ps !! i
-getPatF (InfixPFI LArg) (InfixPF l _ _) = Just l
-getPatF (InfixPFI RArg) (InfixPF _ _ r) = Just r
-getPatF (UInfixPFI LArg) (UInfixPF l _ _) = Just l
-getPatF (UInfixPFI RArg) (UInfixPF _ _ r) = Just r
-getPatF (RecPFI i) (RecPF _ nps) = Just $ snd $ nps !! i
-getPatF (ListPFI i) (ListPF ps) = Just $ ps !! i
-
-modPatF :: PatFI -> PatF a -> (a -> a) -> PatF a
-modPatF (TupPFI i) (TupPF ps) f = TupPF $ updateList i ps f
-modPatF (UnboxedTupPFI i) (UnboxedTupPF ps) f = UnboxedTupPF $ updateList i ps f
-modPatF (ConPFI i) (ConPF name ps) f = ConPF name $ updateList i ps f
-modPatF (InfixPFI LArg) (InfixPF l name r) f = InfixPF (f l) name r
-modPatF (InfixPFI RArg) (InfixPF l name r) f = InfixPF l name (f r)
-modPatF (UInfixPFI LArg) (UInfixPF l name r) f = UInfixPF (f l) name r
-modPatF (UInfixPFI RArg) (UInfixPF l name r) f = UInfixPF l name (f r)
-modPatF (RecPFI i) (RecPF name nps) f = RecPF name (updateList i nps (fmap f))
-modPatF (ListPFI i) (ListPF ps) f = ListPF $ updateList i ps f
-
-annPat :: PatF a -> PatF (PatFI, a)
-annPat = undefined
-
-data ExpIndex
-
-getExp :: ExpIndex -> ExpF a -> a
-getExp = undefined
-
-setExp :: ExpIndex -> ExpF a -> a -> a
-setExp = undefined
-
-patIndexToExpIndex :: PatFI -> ExpIndex
-patIndexToExpIndex = undefined
+deriving instance Show a => Show (ExpF a)
+deriving instance Generic1 ExpF
+type instance Key ExpF = Key (Rep1 ExpF)
+instance Keyed ExpF where
+  mapWithKey g fa = to1 $ mapWithKey g (from1 fa)
+instance Adjustable ExpF where
+  adjust g k fa = mapWithKey (\k' x -> if k == k' then g x else x) fa
