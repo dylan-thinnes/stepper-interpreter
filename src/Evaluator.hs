@@ -313,15 +313,13 @@ matchPatKeyed pat exp = go (projectK pat) (projectK exp)
     go (SigPF pat type_) _ = error "matchPatKeyed: Unsupported pat SigP"
     go (ViewPF exp pat) _ = error "matchPatKeyed: Unsupported pat ViewP"
     go pat exp =
+      -- TODO: Definitely unfinished cases here somewhere...
       let ((_, f), args) = flattenApps exp
       in
       if
-        | length args == 0
-        -> mismatch
-        | (ConE _) <- f
-        -> mismatch
+        | length args == 0 -> mismatch
+        | (ConE _) <- f -> mismatch
         -- | (VarE fName) <- f
-        -- , show fName == "GHC.Err.error" -- TODO: Check fName is error w/o string-typing
+        -- , show fName == "GHC.Err.error"
         -- -> Failure ["Pattern forces the evaluation of an error."]
-        | otherwise
-        -> needsReduction -- TODO: Consider how receiver checks for forcing of an `error "msg"`
+        | otherwise -> needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
