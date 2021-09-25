@@ -245,6 +245,25 @@ prependMatchFailure (prePatKey, preExpKey) failure =
 withPreKeys :: (PatKey, ExpKey) -> MatchResult -> MatchResult
 withPreKeys prekeys = first $ prependMatchFailure prekeys
 
+listifyKey :: (a, b) -> ([a], b)
+listifyKey = first (\x -> [x])
+
+prependKey :: a -> ([a], b) -> ([a], b)
+prependKey a = first (a :)
+
+-- TODO: Handle infix applications & type applications (URGENT!)
+-- Could simplify as catamorphism w/ Compose (ExpKey,) ExpF ??
+flattenAppsKeyed :: ExpF (Key ExpF, Exp) -> ((ExpKey, Exp), [(ExpKey, Exp)])
+flattenAppsKeyed = fmap reverse . go
+  where
+    -- Build up argument list in reverse, to avoid O(n^2)
+    go :: ExpF (Key ExpF, Exp) -> ((ExpKey, Exp), [(ExpKey, Exp)])
+    go (AppEF (fKey, f) (argKey, arg)) =
+      let (deepF, deepArgs) = go $ projectK f
+      in
+      (prependKey fKey deepF, ([argKey], arg) : map (prependKey fKey) deepArgs)
+    go exp = (([], embedK exp), [])
+
 matchPatKeyed :: Pat -> Exp -> MatchResult
 matchPatKeyed pat exp = go (projectK pat) (projectK exp)
   where
@@ -253,25 +272,6 @@ matchPatKeyed pat exp = go (projectK pat) (projectK exp)
     matchWithPreKeys :: (PatKey, Pat) -> (ExpKey, Exp) -> MatchResult
     matchWithPreKeys (prePatKey, pat) (preExpKey, exp) =
       withPreKeys (prePatKey, preExpKey) $ rec pat exp
-
-    listifyKey :: (a, b) -> ([a], b)
-    listifyKey = first (\x -> [x])
-
-    prependKey :: a -> ([a], b) -> ([a], b)
-    prependKey a = first (a :)
-
-    -- TODO: Handle infix applications & type applications
-    -- Could simplify as catamorphism w/ Compose (ExpKey,) ExpF ??
-    flattenApps :: ExpF (Key ExpF, Exp) -> ((ExpKey, Exp), [(ExpKey, Exp)])
-    flattenApps = fmap reverse . go
-      where
-        -- Build up argument list in reverse, to avoid O(n^2)
-        go :: ExpF (Key ExpF, Exp) -> ((ExpKey, Exp), [(ExpKey, Exp)])
-        go (AppEF (fKey, f) (argKey, arg)) =
-          let (deepF, deepArgs) = go $ projectK f
-          in
-          (prependKey fKey deepF, ([argKey], arg) : map (prependKey fKey) deepArgs)
-        go exp = (([], embedK exp), [])
 
     go :: PatF (Key PatF, Pat) -> ExpF (Key ExpF, Exp) -> MatchResult
     go (LitPF pat) (LitEF exp)
@@ -289,9 +289,12 @@ matchPatKeyed pat exp = go (projectK pat) (projectK exp)
     go (UnboxedTupPF _) _ = error "matchPatKeyed: Unsupported UnboxedTupP pattern in AST"
     go (UnboxedSumPF _ _ _) _ = error "matchPatKeyed: Unsupported UnboxedSumP pattern in AST"
     go (ConPF patConName pats) exp
-      | ((_, ConE expConName), args) <- flattenApps exp
+      | ((_, ConE expConName), args) <- flattenAppsKeyed exp
       = if expConName /= patConName
-          then unexpectedError "Pattern and expression have different constructor names."
+          then mismatch -- if constructors are different, assume that they belong to the same ADT & are mismatched
+                        -- TODO: How does this interact with PatternSynonyms?
+               -- if the pattern & expression constructors come from different ADTS, we'd return: `unexpectedError "Pattern and expression have different constructor names."`
+               -- alas, we can't do this comparison here, for now
           else case compare (length pats) (length args) of
             LT -> unexpectedError "Data constructor in expression is applied to too many arguments."
             GT -> unexpectedError "Data constructor in expression isn't fully applied."
@@ -314,7 +317,7 @@ matchPatKeyed pat exp = go (projectK pat) (projectK exp)
     go (ViewPF exp pat) _ = error "matchPatKeyed: Unsupported pat ViewP"
     go pat exp =
       -- TODO: Definitely unfinished cases here somewhere...
-      let ((_, f), args) = flattenApps exp
+      let ((_, f), args) = flattenAppsKeyed exp
       in
       if
         | length args == 0 -> mismatch
