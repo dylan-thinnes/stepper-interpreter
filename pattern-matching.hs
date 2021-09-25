@@ -26,6 +26,8 @@ wildPats =
 
 x@(Just y) = Nothing
 
+-- patterns force reduction only as far as necessary to match
+-- they do not "double force" i.e. reset thunks to be forced again by the next branch
 patOrder :: Char
 patOrder =
   let term =
@@ -40,4 +42,19 @@ patOrder =
     (traceShow "pat4" -> (Just _, Right _)) -> '4' -- nothing
     (traceShow "pat5" -> (Just 2, _)) -> '5' -- should print J1
     (traceShow "pat6" -> (_, Left 'y')) -> '6' -- should print L'x'
+    (traceShow "patW" -> _) -> '_'
+
+-- Even if the latter part of a pattern, already evaluated, does not match, the
+-- former parts of the pattern will still force evaluation to full depth
+-- i.e. patterns always reduce as far as necessary before checking
+failureNotAlwaysBeforeForcing :: Char
+failureNotAlwaysBeforeForcing =
+  let term =
+        ( traceShow "J" $ Just $ traceShow "J1" 1
+        , traceShow "'x'" 'x'
+        )
+  in
+  case term of
+    (traceShow "pat1" -> (Just x, 'y')) -> '1' -- should print J
+    (traceShow "pat2" -> (Just 2, 'z')) -> '1' -- should print J
     (traceShow "patW" -> _) -> '_'

@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -11,6 +12,8 @@
 {-# LANGUAGE ViewPatterns #-}
 module Evaluator where
 
+import "base" Control.Monad (zipWithM)
+import "base" Data.Bifunctor
 import "base" Data.Foldable (fold)
 import "base" Data.Maybe (isNothing, catMaybes, fromJust)
 import "base" Data.Void
@@ -44,6 +47,15 @@ updateList i l f
 
 setList :: Int -> [a] -> a -> [a]
 setList i l x = updateList i l (const x)
+
+dekeyed :: Functor f => f (Key f, a) -> f a
+dekeyed = fmap snd
+
+projectK :: (R.Recursive t, Keyed (R.Base t)) => t -> R.Base t (Key (R.Base t), t)
+projectK = keyed . R.project
+
+embedK :: (R.Corecursive t, Keyed (R.Base t)) => R.Base t (Key (R.Base t), t) -> t
+embedK = R.embed . dekeyed
 
 -- Evaluation
 
@@ -185,10 +197,6 @@ tryReduce environment exp =
     CondE cond true false -> do
       undefined
 
-data MatchResult
-  = MatchReduceError String
-  | SuccessfulMatch [(Name, Exp)]
-
 deriving instance Show a => Show (PatF a)
 deriving instance Generic1 PatF
 type instance Key PatF = Key (Rep1 PatF)
@@ -204,3 +212,125 @@ instance Keyed ExpF where
   mapWithKey g fa = to1 $ mapWithKey g (from1 fa)
 instance Adjustable ExpF where
   adjust g k fa = mapWithKey (\k' x -> if k == k' then g x else x) fa
+
+type PatKey = [Key PatF]
+type ExpKey = [Key ExpF]
+
+data MatchFailure
+  = Mismatch (PatKey, ExpKey) -- Pattern & expression both in WHNF and do not match - this pattern fails
+  | NeedsReduction (PatKey, ExpKey) -- Specific subexpression needs further reduction due to given subpattern before pattern can be determined to match or fail
+  | UnexpectedError String (PatKey, ExpKey) -- For errors that shouldn't occur if the type-system is checking, e.g. tuple arity mismatch
+
+type MatchSuccess = [(Pat, Exp)]
+type MatchMonad a = Either MatchFailure a
+type MatchResult = MatchMonad MatchSuccess
+
+mismatch, needsReduction :: MatchMonad a
+mismatch = Left $ Mismatch ([], [])
+needsReduction = Left $ NeedsReduction ([], [])
+
+unexpectedError :: String -> MatchMonad a
+unexpectedError msg = Left $ UnexpectedError msg ([], [])
+
+prependMatchFailure :: (PatKey, ExpKey) -> MatchFailure -> MatchFailure
+prependMatchFailure (prePatKey, preExpKey) failure =
+  case failure of
+    UnexpectedError msg (patKey, expKey) -> UnexpectedError msg (prePatKey ++ patKey, preExpKey ++ expKey)
+    Mismatch (patKey, expKey) -> Mismatch (prePatKey ++ patKey, preExpKey ++ expKey)
+    NeedsReduction (patKey, expKey) -> NeedsReduction (prePatKey ++ patKey, preExpKey ++ expKey)
+
+withPreKeys :: (PatKey, ExpKey) -> MatchResult -> MatchResult
+withPreKeys prekeys = first $ prependMatchFailure prekeys
+
+matchPatKeyed :: Pat -> Exp -> MatchResult
+matchPatKeyed pat exp = go (projectK pat) (projectK exp)
+  where
+    rec = matchPatKeyed
+
+    matchWithPreKeys :: (PatKey, Pat) -> (ExpKey, Exp) -> MatchResult
+    matchWithPreKeys (prePatKey, pat) (preExpKey, exp) =
+      withPreKeys (prePatKey, preExpKey) $ rec pat exp
+
+    matchWithSinglePreKeys :: (Key PatF, Pat) -> (Key ExpF, Exp) -> MatchResult
+    matchWithSinglePreKeys pat exp =
+      matchWithPreKeys (listifyKey pat) (listifyKey exp)
+
+    zipMatchWithPreKeys :: [(PatKey, Pat)] -> [(ExpKey, Exp)] -> MatchResult
+    zipMatchWithPreKeys patsWithPreKeys expsWithPreKeys =
+      fmap concat $ sequence $ zipWith matchWithPreKeys patsWithPreKeys expsWithPreKeys
+
+    zipMatchWithSinglePreKeys :: [(Key PatF, Pat)] -> [(Key ExpF, Exp)] -> MatchResult
+    zipMatchWithSinglePreKeys patsWithPreKeys expsWithPreKeys =
+      zipMatchWithPreKeys (map listifyKey patsWithPreKeys) (map listifyKey expsWithPreKeys)
+
+    listifyKey :: (a, b) -> ([a], b)
+    listifyKey = first (\x -> [x])
+
+    prependKey :: a -> ([a], b) -> ([a], b)
+    prependKey a = first (a :)
+
+    -- TODO: Handle infix applications & type applications
+    -- Could simplify as catamorphism w/ Compose (ExpKey,) ExpF ??
+    flattenApps :: ExpF (Key ExpF, Exp) -> ((ExpKey, Exp), [(ExpKey, Exp)])
+    flattenApps = fmap reverse . go
+      where
+        -- Build up argument list in reverse, to avoid O(n^2)
+        go :: ExpF (Key ExpF, Exp) -> ((ExpKey, Exp), [(ExpKey, Exp)])
+        go (AppEF (fKey, f) (argKey, arg)) =
+          let (deepF, deepArgs) = go $ projectK f
+          in
+          (prependKey fKey deepF, ([argKey], arg) : map (prependKey fKey) deepArgs)
+        go exp = (([], embedK exp), [])
+
+    go :: PatF (Key PatF, Pat) -> ExpF (Key ExpF, Exp) -> MatchResult
+    go (LitPF pat) (LitEF exp)
+      | pat == exp = Right []
+      | otherwise = mismatch
+    go (VarPF name) exp = Right [(VarP name, embedK exp)]
+    go (TupPF pats) (TupEF mexps)
+      | length pats /= length mexps = unexpectedError "Tuple pattern-expression arity mismatch."
+      | otherwise = do
+          -- If there are any Nothing expressions, the tuple expression is partially applied and we short circuit with an error
+          let onlyJust Nothing = unexpectedError "Tuple expression is not fully applied (e.g. is a partially applied tuple like (,,) or (1,))."
+              onlyJust (Just a) = pure a
+          exps <- traverse onlyJust mexps
+          zipMatchWithSinglePreKeys pats exps
+    go (UnboxedTupPF _) _ = error "matchPatKeyed: Unsupported UnboxedTupP pattern in AST"
+    go (UnboxedSumPF _ _ _) _ = error "matchPatKeyed: Unsupported UnboxedSumP pattern in AST"
+    go (ConPF patConName pats) exp
+      | ((_, ConE expConName), args) <- flattenApps exp
+      = if expConName /= patConName
+          then unexpectedError "Pattern and expression have different constructor names."
+          else case compare (length pats) (length args) of
+            LT -> unexpectedError "Data constructor in expression is applied to too many arguments."
+            GT -> unexpectedError "Data constructor in expression isn't fully applied."
+            EQ -> zipMatchWithPreKeys (map listifyKey pats) args
+    go (InfixPF patL _ patR) _ = error "matchPatKeyed: Unsupported pat InfixP" -- TODO: Urgently need to support this for cons
+    go (UInfixPF patL _ patR) _ = error "matchPatKeyed: Unsupported pat UInfixP"
+    go (ParensPF (patKey, pat)) exp = matchWithPreKeys ([patKey], pat) ([], embedK exp)
+    go pat (ParensEF (expKey, exp)) = matchWithPreKeys ([], embedK pat) ([expKey], exp)
+    go (TildePF (patKey, pat)) exp = Right [(pat, embedK exp)] -- lazy patterns always match, deferred to a "let-desugaring"
+    go (BangPF pat) exp = error "matchPatKeyed: Unsupported pat BangP"
+    go (AsPF name pat) exp = do
+      submatches <- matchWithPreKeys (listifyKey pat) ([], embedK exp)
+      pure $ (VarP name, embedK exp) : submatches
+    go WildPF _ = Right []
+    go (RecPF _ fieldPats) _ = error "matchPatKeyed: Unsupported pat RecP" -- TODO: Urgently need to support field patterns
+    go (ListPF pats) (ListEF exps)
+      | length pats /= length exps = unexpectedError "List pattern and list expression have different lengths."
+      | otherwise = zipMatchWithSinglePreKeys pats exps
+    go (SigPF pat type_) _ = error "matchPatKeyed: Unsupported pat SigP"
+    go (ViewPF exp pat) _ = error "matchPatKeyed: Unsupported pat ViewP"
+    go pat exp =
+      let ((_, f), args) = flattenApps exp
+      in
+      if
+        | length args == 0
+        -> mismatch
+        | (ConE _) <- f
+        -> mismatch
+        -- | (VarE fName) <- f
+        -- , show fName == "GHC.Err.error" -- TODO: Check fName is error w/o string-typing
+        -- -> Failure ["Pattern forces the evaluation of an error."]
+        | otherwise
+        -> needsReduction -- TODO: Consider how receiver checks for forcing of an `error "msg"`
