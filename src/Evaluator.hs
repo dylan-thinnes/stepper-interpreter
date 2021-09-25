@@ -57,6 +57,9 @@ projectK = keyed . R.project
 embedK :: (R.Corecursive t, Keyed (R.Base t)) => R.Base t (Key (R.Base t), t) -> t
 embedK = R.embed . dekeyed
 
+zipConcatM :: Monad m => (a -> b -> m [c]) -> [a] -> [b] -> m [c]
+zipConcatM f as bs = concat <$> zipWithM f as bs
+
 -- Evaluation
 
 data Evaluable
@@ -251,18 +254,6 @@ matchPatKeyed pat exp = go (projectK pat) (projectK exp)
     matchWithPreKeys (prePatKey, pat) (preExpKey, exp) =
       withPreKeys (prePatKey, preExpKey) $ rec pat exp
 
-    matchWithSinglePreKeys :: (Key PatF, Pat) -> (Key ExpF, Exp) -> MatchResult
-    matchWithSinglePreKeys pat exp =
-      matchWithPreKeys (listifyKey pat) (listifyKey exp)
-
-    zipMatchWithPreKeys :: [(PatKey, Pat)] -> [(ExpKey, Exp)] -> MatchResult
-    zipMatchWithPreKeys patsWithPreKeys expsWithPreKeys =
-      fmap concat $ sequence $ zipWith matchWithPreKeys patsWithPreKeys expsWithPreKeys
-
-    zipMatchWithSinglePreKeys :: [(Key PatF, Pat)] -> [(Key ExpF, Exp)] -> MatchResult
-    zipMatchWithSinglePreKeys patsWithPreKeys expsWithPreKeys =
-      zipMatchWithPreKeys (map listifyKey patsWithPreKeys) (map listifyKey expsWithPreKeys)
-
     listifyKey :: (a, b) -> ([a], b)
     listifyKey = first (\x -> [x])
 
@@ -294,7 +285,7 @@ matchPatKeyed pat exp = go (projectK pat) (projectK exp)
           let onlyJust Nothing = unexpectedError "Tuple expression is not fully applied (e.g. is a partially applied tuple like (,,) or (1,))."
               onlyJust (Just a) = pure a
           exps <- traverse onlyJust mexps
-          zipMatchWithSinglePreKeys pats exps
+          zipConcatM matchWithPreKeys (listifyKey <$> pats) (listifyKey <$> exps)
     go (UnboxedTupPF _) _ = error "matchPatKeyed: Unsupported UnboxedTupP pattern in AST"
     go (UnboxedSumPF _ _ _) _ = error "matchPatKeyed: Unsupported UnboxedSumP pattern in AST"
     go (ConPF patConName pats) exp
@@ -304,7 +295,7 @@ matchPatKeyed pat exp = go (projectK pat) (projectK exp)
           else case compare (length pats) (length args) of
             LT -> unexpectedError "Data constructor in expression is applied to too many arguments."
             GT -> unexpectedError "Data constructor in expression isn't fully applied."
-            EQ -> zipMatchWithPreKeys (map listifyKey pats) args
+            EQ -> zipConcatM matchWithPreKeys (listifyKey <$> pats) args
     go (InfixPF patL _ patR) _ = error "matchPatKeyed: Unsupported pat InfixP" -- TODO: Urgently need to support this for cons
     go (UInfixPF patL _ patR) _ = error "matchPatKeyed: Unsupported pat UInfixP"
     go (ParensPF (patKey, pat)) exp = matchWithPreKeys ([patKey], pat) ([], embedK exp)
@@ -318,7 +309,7 @@ matchPatKeyed pat exp = go (projectK pat) (projectK exp)
     go (RecPF _ fieldPats) _ = error "matchPatKeyed: Unsupported pat RecP" -- TODO: Urgently need to support field patterns
     go (ListPF pats) (ListEF exps)
       | length pats /= length exps = unexpectedError "List pattern and list expression have different lengths."
-      | otherwise = zipMatchWithSinglePreKeys pats exps
+      | otherwise = zipConcatM matchWithPreKeys (listifyKey <$> pats) (listifyKey <$> exps)
     go (SigPF pat type_) _ = error "matchPatKeyed: Unsupported pat SigP"
     go (ViewPF exp pat) _ = error "matchPatKeyed: Unsupported pat ViewP"
     go pat exp =
