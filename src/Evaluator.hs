@@ -355,7 +355,6 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
           let (f, args) = flattenAppsKeyed annExp
           in
           if
-            | length args == 0 -> mismatch
             | (ConE _) <- deann f -> mismatch
             -- | (VarE fName) <- f
             -- , show fName == "GHC.Err.error"
