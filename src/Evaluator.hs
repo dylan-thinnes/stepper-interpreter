@@ -282,7 +282,6 @@ toKeyPairDeann ann =
   (key, R.embed $ fmap deann expf)
 
 -- TODO: Handle infix applications & type applications (URGENT!)
--- Could simplify as catamorphism w/ Compose (ExpKey,) ExpF ??
 flattenAppsKeyed :: Fix (RecKey Exp) -> (Fix (RecKey Exp), [Fix (RecKey Exp)])
 flattenAppsKeyed = fmap reverse . go
   where
