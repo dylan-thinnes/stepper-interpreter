@@ -350,13 +350,10 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
           | otherwise = zipConcatM go pats exps
         match (SigPF pat type_) _ = error "matchPatKeyed: Unsupported pat SigP"
         match (ViewPF exp pat) _ = error "matchPatKeyed: Unsupported pat ViewP"
-        match pat exp =
+        match pat exp
           -- TODO: Definitely unfinished cases here somewhere...
-          let (f, args) = flattenAppsKeyed annExp
-          in
-          if
-            | (ConE _) <- deann f -> mismatch
-            -- | (VarE fName) <- f
-            -- , show fName == "GHC.Err.error"
-            -- -> Failure ["Pattern forces the evaluation of an error."]
-            | otherwise -> needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
+          | let (f, args) = flattenAppsKeyed annExp
+          , (ConE _) <- deann f
+          = mismatch
+          | otherwise
+          = needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
