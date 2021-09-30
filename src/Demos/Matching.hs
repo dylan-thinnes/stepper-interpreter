@@ -3,8 +3,10 @@
 {-# LANGUAGE PackageImports #-}
 module Demos.Matching where
 
+import "recursion-schemes" Data.Functor.Foldable qualified as R
+
 import "template-haskell" Language.Haskell.TH
-import "template-haskell" Language.Haskell.TH.Syntax (Lift(..))
+import "template-haskell" Language.Haskell.TH.Syntax (Lift(..), Name(..), NameFlavour(..), PkgName(..))
 
 import Ppr qualified as P
 import Evaluator
@@ -22,8 +24,8 @@ e2eMatchDemo mpat mexp = do
         --, "patkey: " ++ show patKey
         --, "expKey: " ++ show expKey
         --, ""
-        , P.boldByANSI "pattern: " ++ P.pprintColoured (P.attachAnn patKey (P.Annotation P.orange Nothing) (P.noann pat))
-        , P.boldByANSI "expression: ", P.pprintColoured (P.attachAnn expKey (P.Annotation P.orange Nothing) (P.noann exp))
+        , P.boldByANSI "pattern: " ++ P.pprintColoured (P.removeBaseQualifications $ P.attachAnn patKey (P.Annotation P.orange Nothing) (P.noann pat))
+        , P.boldByANSI "expression: ", P.pprintColoured (P.removeBaseQualifications $ P.attachAnn expKey (P.Annotation P.orange Nothing) (P.noann exp))
         ]
     Left (NeedsReduction (patKey, expKey)) ->
       runIO $ putStrLn $ unlines
@@ -32,8 +34,8 @@ e2eMatchDemo mpat mexp = do
         --, "patkey: " ++ show patKey
         --, "expKey: " ++ show expKey
         --, ""
-        , P.boldByANSI "pattern: " ++ P.pprintColoured (P.attachAnn patKey (P.Annotation P.purple Nothing) (P.noann pat))
-        , P.boldByANSI "expression: ", P.pprintColoured (P.attachAnn expKey (P.Annotation P.purple Nothing) (P.noann exp))
+        , P.boldByANSI "pattern: " ++ P.pprintColoured (P.removeBaseQualifications $ P.attachAnn patKey (P.Annotation P.purple Nothing) (P.noann pat))
+        , P.boldByANSI "expression: ", P.pprintColoured (P.removeBaseQualifications $ P.attachAnn expKey (P.Annotation P.purple Nothing) (P.noann exp))
         ]
     Left (UnexpectedError msg (patKey, expKey)) ->
       runIO $ putStrLn $ unlines
@@ -42,8 +44,8 @@ e2eMatchDemo mpat mexp = do
         --, "patkey: " ++ show patKey
         --, "expKey: " ++ show expKey
         --, ""
-        , P.boldByANSI "pattern: " ++ P.pprintColoured (P.attachAnn patKey (P.Annotation P.red Nothing) (P.noann pat))
-        , P.boldByANSI "expression: ", P.pprintColoured (P.attachAnn expKey (P.Annotation P.red Nothing) (P.noann exp))
+        , P.boldByANSI "pattern: " ++ P.pprintColoured (P.removeBaseQualifications $ P.attachAnn patKey (P.Annotation P.red Nothing) (P.noann pat))
+        , P.boldByANSI "expression: ", P.pprintColoured (P.removeBaseQualifications $ P.attachAnn expKey (P.Annotation P.red Nothing) (P.noann exp))
         ]
     Right bound ->
       runIO $ putStrLn $ unlines
@@ -52,8 +54,8 @@ e2eMatchDemo mpat mexp = do
         --, "patkey: " ++ show patKey
         --, "expKey: " ++ show expKey
         --, ""
-        , P.boldByANSI "pattern: " ++ P.pprintColoured (P.noann pat)
-        , P.boldByANSI "expression: ", P.pprintColoured (P.noann exp)
+        , P.boldByANSI "pattern: " ++ P.pprintColoured (P.removeBaseQualifications $ P.noann pat)
+        , P.boldByANSI "expression: ", P.pprintColoured (P.removeBaseQualifications $ P.noann exp)
         ]
   lift ()
 

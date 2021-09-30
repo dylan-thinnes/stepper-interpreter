@@ -32,6 +32,7 @@ import Lift
 import Ppr.Lib hiding (Doc)
 import qualified Ppr.Lib
 
+-- annotations
 type Annotated f = Fix (Ann (Maybe Annotation) f)
 type AnnotatedExp = Annotated ExpF
 type AnnotatedPat = Annotated PatF
@@ -80,6 +81,45 @@ pprintColoured annexp = foldr colourSpan source spans
       in
       pre ++ colorByANSI color text ++ post
 
+-- removing qualified names from base package for simpler pprinting
+class RemoveBaseQualifications a where
+  removeBaseQualifications :: a -> a
+
+instance RemoveBaseQualifications Name where
+  removeBaseQualifications name
+    | (Name occName (NameG namespace pkgName modName)) <- name
+    , pkgName == PkgName "base"
+    = Name occName NameS
+    | otherwise
+    = name
+
+instance RemoveBaseQualifications Exp where
+  removeBaseQualifications = R.hoist rbqExpF
+
+instance RemoveBaseQualifications AnnotatedExp where
+  removeBaseQualifications = R.hoist (\(Pair cmann expf) -> Pair cmann (rbqExpF expf))
+
+rbqExpF (VarEF name) = VarEF $ removeBaseQualifications name
+rbqExpF (ConEF name) = ConEF $ removeBaseQualifications name
+rbqExpF (RecConEF name fieldExps) = RecConEF (removeBaseQualifications name) fieldExps
+rbqExpF (UnboundVarEF name) = UnboundVarEF $ removeBaseQualifications name
+rbqExpF expf = expf
+
+instance RemoveBaseQualifications Pat where
+  removeBaseQualifications = R.hoist rbqPatF
+
+instance RemoveBaseQualifications AnnotatedPat where
+  removeBaseQualifications = R.hoist (\(Pair cmann patf) -> Pair cmann (rbqPatF patf))
+
+rbqPatF (VarPF name) = VarPF $ removeBaseQualifications name
+rbqPatF (ConPF name pats) = ConPF (removeBaseQualifications name) pats
+rbqPatF (InfixPF l name r) = InfixPF l (removeBaseQualifications name) r
+rbqPatF (UInfixPF l name r) = UInfixPF l (removeBaseQualifications name) r
+rbqPatF (AsPF name subpat) = AsPF (removeBaseQualifications name) subpat
+rbqPatF (RecPF name fieldPats) = RecPF (removeBaseQualifications name) fieldPats
+rbqPatF patf = patf
+
+-- document
 type Doc = Ppr.Lib.Doc Annotation
 
 nestDepth :: Int
