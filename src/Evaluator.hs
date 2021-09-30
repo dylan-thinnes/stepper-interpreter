@@ -304,6 +304,11 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
           | otherwise = zipConcatM go pats exps
         match (SigPF pat type_) _ = error "matchPatKeyed: Unsupported pat SigP"
         match (ViewPF exp pat) _ = error "matchPatKeyed: Unsupported pat ViewP"
+
+        -- TODO: How does matching through lets & other scope-affecting nodes work? Must consider.
+        -- Below enabled for demo purposes, not yet "stable"
+        match pat (LetEF _ exp) = go annPat exp
+
         match pat exp
           -- TODO: Definitely unfinished cases here somewhere...
           | let (f, args) = flattenAppsKeyed annExp
