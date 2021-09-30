@@ -1,3 +1,5 @@
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleInstances #-}
 -- | contains a prettyprinter for the
 -- Template Haskell datatypes
 
@@ -7,6 +9,7 @@ module Ppr where
     -- re-exports them all.
 
 import Text.PrettyPrint.Annotated (render)
+import qualified Text.PrettyPrint.Annotated (annotate)
 import PrettyPrint hiding (Doc)
 import qualified PrettyPrint
 import Language.Haskell.TH.Syntax
@@ -16,8 +19,21 @@ import GHC.Show  ( showMultiLineString )
 import GHC.Lexeme( startsVarSym )
 import Data.Ratio ( numerator, denominator )
 import Prelude hiding ((<>))
+import Data.Functor.Const
+import Data.Functor.Product
+import Data.Fix
 
+import qualified Data.Functor.Foldable as R
 import Lift
+
+type Annotated f = Fix (Product (Const (Maybe Annotation)) f)
+type AnnotatedExp = Annotated ExpF
+
+noann :: Exp -> AnnotatedExp
+noann = R.hoist (Pair (Const Nothing))
+
+deann :: AnnotatedExp -> Exp
+deann = R.hoist (\(Pair _ f) -> f)
 
 type Color = (Word8, Word8, Word8)
 data Annotation = Annotation { color :: Color, info :: Maybe String }
@@ -114,7 +130,7 @@ instance Ppr ModuleInfo where
 
 ------------------------------
 instance Ppr Exp where
-    ppr = pprExp noPrec
+    ppr = pprExp noPrec . noann
 
 pprPrefixOcc :: Name -> Doc
 -- Print operators with parens around them
@@ -127,81 +143,94 @@ isSymOcc n
       (c:_) -> startsVarSym c
                    -- c.f. OccName.startsVarSym in GHC itself
 
-pprInfixExp :: Exp -> Doc
-pprInfixExp (VarE v) = pprName' Infix v
-pprInfixExp (ConE v) = pprName' Infix v
-pprInfixExp (UnboundVarE v) = pprName' Infix v
--- This case will only ever be reached in exceptional circumstances.
--- For example, when printing an error message in case of a malformed expression.
-pprInfixExp e = text "`" <> ppr e <> text "`"
+instance Ppr (a, Precedence -> Doc) where
+  ppr (_, cont) = cont noPrec
 
-pprExp :: Precedence -> Exp -> Doc
-pprExp _ (VarE v)     = pprName' Applied v
-pprExp _ (ConE c)     = pprName' Applied c
-pprExp i (LitE l)     = pprLit i l
-pprExp i (AppE e1 e2) = parensIf (i >= appPrec) $ pprExp opPrec e1
-                                              <+> pprExp appPrec e2
-pprExp i (AppTypeE e t)
- = parensIf (i >= appPrec) $ pprExp opPrec e <+> char '@' <> pprParendType t
-pprExp _ (ParensE e)  = parens (pprExp noPrec e)
-pprExp i (UInfixE e1 op e2)
- = parensIf (i > unopPrec) $ pprExp unopPrec e1
-                         <+> pprInfixExp op
-                         <+> pprExp unopPrec e2
-pprExp i (InfixE (Just e1) op (Just e2))
- = parensIf (i >= opPrec) $ pprExp opPrec e1
-                        <+> pprInfixExp op
-                        <+> pprExp opPrec e2
-pprExp _ (InfixE me1 op me2) = parens $ pprMaybeExp noPrec me1
-                                    <+> pprInfixExp op
+pprInfixExp :: AnnotatedExp -> Doc
+pprInfixExp exp@(Fix (Pair (Const mann) expf)) =
+  case expf of
+    VarEF v -> pprName' Infix v
+    ConEF v -> pprName' Infix v
+    UnboundVarEF v -> pprName' Infix v
+    -- This case will only ever be reached in exceptional circumstances.
+    -- For example, when printing an error message in case of a malformed expression.
+    _ -> text "`" <> pprExp noPrec exp <> text "`"
+
+pprExp :: Precedence -> AnnotatedExp -> Doc
+pprExp prec exp = R.para alg exp prec
+  where
+    alg (Pair (Const mann) expf) prec = mannotate mann $ pprExpF prec expf
+
+pprExp' :: Precedence -> (AnnotatedExp, Precedence -> Doc) -> Doc
+pprExp' prec (_, cont) = cont prec
+
+pprExpF :: Precedence -> ExpF (AnnotatedExp, Precedence -> Doc) -> Doc
+pprExpF _ (VarEF v)     = pprName' Applied v
+pprExpF _ (ConEF c)     = pprName' Applied c
+pprExpF i (LitEF l)     = pprLit i l
+pprExpF i (AppEF e1 e2) = parensIf (i >= appPrec) $ pprExp' opPrec e1
+                                              <+> pprExp' appPrec e2
+pprExpF i (AppTypeEF e t)
+ = parensIf (i >= appPrec) $ pprExp' opPrec e <+> char '@' <> pprParendType t
+pprExpF _ (ParensEF e)  = parens (pprExp' noPrec e)
+pprExpF i (UInfixEF e1 op e2)
+ = parensIf (i > unopPrec) $ pprExp' unopPrec e1
+                         <+> pprInfixExp (fst op)
+                         <+> pprExp' unopPrec e2
+pprExpF i (InfixEF (Just e1) op (Just e2))
+ = parensIf (i >= opPrec) $ pprExp' opPrec e1
+                        <+> pprInfixExp (fst op)
+                        <+> pprExp' opPrec e2
+pprExpF _ (InfixEF me1 op me2) = parens $ pprMaybeExp noPrec me1
+                                    <+> pprInfixExp (fst op)
                                     <+> pprMaybeExp noPrec me2
-pprExp i (LamE [] e) = pprExp i e -- #13856
-pprExp i (LamE ps e) = parensIf (i > noPrec) $ char '\\' <> hsep (map (pprPat appPrec) ps)
+pprExpF i (LamEF [] e) = pprExp' i e -- #13856
+pprExpF i (LamEF ps e) = parensIf (i > noPrec) $ char '\\' <> hsep (map (pprPat appPrec) ps)
                                            <+> text "->" <+> ppr e
-pprExp i (LamCaseE ms) = parensIf (i > noPrec)
+pprExpF i (LamCaseEF ms) = parensIf (i > noPrec)
                        $ text "\\case" $$ nest nestDepth (ppr ms)
-pprExp i (TupE es)
+pprExpF i (TupEF es)
   | [Just e] <- es
-  = pprExp i (ConE (tupleDataName 1) `AppE` e)
+  = pprExp i (Fix $ Pair (Const Nothing) $ AppEF (Fix $ Pair (Const Nothing) (ConEF (tupleDataName 1))) (fst e))
   | otherwise
   = parens (commaSepWith (pprMaybeExp noPrec) es)
-pprExp _ (UnboxedTupE es) = hashParens (commaSepWith (pprMaybeExp noPrec) es)
-pprExp _ (UnboxedSumE e alt arity) = unboxedSumBars (ppr e) alt arity
+pprExpF _ (UnboxedTupEF es) = hashParens (commaSepWith (pprMaybeExp noPrec) es)
+pprExpF _ (UnboxedSumEF e alt arity) = unboxedSumBars (ppr e) alt arity
 -- Nesting in Cond is to avoid potential problems in do statements
-pprExp i (CondE guard true false)
+pprExpF i (CondEF guard true false)
  = parensIf (i > noPrec) $ sep [text "if"   <+> ppr guard,
                        nest 1 $ text "then" <+> ppr true,
                        nest 1 $ text "else" <+> ppr false]
-pprExp i (MultiIfE alts)
+pprExpF i (MultiIfEF alts)
   = parensIf (i > noPrec) $ vcat $
       case alts of
         []            -> [text "if {}"]
-        (alt : alts') -> text "if" <+> pprGuarded arrow alt
-                         : map (nest 3 . pprGuarded arrow) alts'
-pprExp i (LetE ds_ e) = parensIf (i > noPrec) $ text "let" <+> pprDecs ds_
+        (alt : alts') -> text "if" <+> pprGuarded arrow (fmap (deann . fst) alt)
+                         : map (nest 3 . pprGuarded arrow) (fmap (deann . fst) <$> alts')
+pprExpF i (LetEF ds_ e) = parensIf (i > noPrec) $ text "let" <+> pprDecs ds_
                                              $$ text " in" <+> ppr e
   where
     pprDecs []  = empty
     pprDecs [d] = ppr d
     pprDecs ds  = braces (semiSep ds)
 
-pprExp i (CaseE e ms)
+pprExpF i (CaseEF e ms)
  = parensIf (i > noPrec) $ text "case" <+> ppr e <+> text "of"
                         $$ nest nestDepth (ppr ms)
-pprExp i (DoE ss_) = parensIf (i > noPrec) $ text "do" <+> pprStms ss_
+pprExpF i (DoEF ss_) = parensIf (i > noPrec) $ text "do" <+> pprStms ss_
   where
     pprStms []  = empty
     pprStms [s] = ppr s
     pprStms ss  = braces (semiSep ss)
-pprExp i (MDoE ss_) = parensIf (i > noPrec) $ text "mdo" <+> pprStms ss_
+pprExpF i (MDoEF ss_) = parensIf (i > noPrec) $ text "mdo" <+> pprStms ss_
   where
     pprStms []  = empty
     pprStms [s] = ppr s
     pprStms ss  = braces (semiSep ss)
 
-pprExp _ (CompE []) = text "<<Empty CompExp>>"
+pprExpF _ (CompEF []) = text "<<Empty CompExp>>"
 -- This will probably break with fixity declarations - would need a ';'
-pprExp _ (CompE ss) =
+pprExpF _ (CompEF ss) =
     if null ss'
        -- If there are no statements in a list comprehension besides the last
        -- one, we simply treat it like a normal list.
@@ -212,24 +241,24 @@ pprExp _ (CompE ss) =
          <> text "]"
   where s = last ss
         ss' = init ss
-pprExp _ (ArithSeqE d) = ppr d
-pprExp _ (ListE es) = brackets (commaSep es)
-pprExp i (SigE e t) = parensIf (i > noPrec) $ pprExp sigPrec e
+pprExpF _ (ArithSeqEF d) = ppr d
+pprExpF _ (ListEF es) = brackets (commaSep es)
+pprExpF i (SigEF e t) = parensIf (i > noPrec) $ pprExp' sigPrec e
                                           <+> dcolon <+> ppr t
-pprExp _ (RecConE nm fs) = ppr nm <> braces (pprFields fs)
-pprExp _ (RecUpdE e fs) = pprExp appPrec e <> braces (pprFields fs)
-pprExp i (StaticE e) = parensIf (i >= appPrec) $
-                         text "static"<+> pprExp appPrec e
-pprExp _ (UnboundVarE v) = pprName' Applied v
-pprExp _ (LabelE s) = text "#" <> text s
-pprExp _ (ImplicitParamVarE n) = text ('?' : n)
+pprExpF _ (RecConEF nm fs) = ppr nm <> braces (pprFields fs)
+pprExpF _ (RecUpdEF e fs) = pprExp' appPrec e <> braces (pprFields fs)
+pprExpF i (StaticEF e) = parensIf (i >= appPrec) $
+                         text "static"<+> pprExp' appPrec e
+pprExpF _ (UnboundVarEF v) = pprName' Applied v
+pprExpF _ (LabelEF s) = text "#" <> text s
+pprExpF _ (ImplicitParamVarEF n) = text ('?' : n)
 
-pprFields :: [(Name,Exp)] -> Doc
+pprFields :: [(Name,(AnnotatedExp, Precedence -> Doc))] -> Doc
 pprFields = sep . punctuate comma . map (\(s,e) -> ppr s <+> equals <+> ppr e)
 
-pprMaybeExp :: Precedence -> Maybe Exp -> Doc
+pprMaybeExp :: Precedence -> Maybe (AnnotatedExp, Precedence -> Doc) -> Doc
 pprMaybeExp _ Nothing = empty
-pprMaybeExp i (Just e) = pprExp i e
+pprMaybeExp i (Just e) = pprExp' i e
 
 ------------------------------
 instance Ppr Stmt where
@@ -331,7 +360,7 @@ pprPat _ (RecP nm fs)
                         map (\(s,p) -> ppr s <+> equals <+> ppr p) fs)
 pprPat _ (ListP ps) = brackets (commaSep ps)
 pprPat i (SigP p t) = parensIf (i > noPrec) $ ppr p <+> dcolon <+> ppr t
-pprPat _ (ViewP e p) = parens $ pprExp noPrec e <+> text "->" <+> pprPat noPrec p
+pprPat _ (ViewP e p) = parens $ pprExp noPrec (noann e) <+> text "->" <+> pprPat noPrec p
 
 ------------------------------
 instance Ppr Dec where

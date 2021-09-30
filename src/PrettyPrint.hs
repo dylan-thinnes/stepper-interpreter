@@ -8,6 +8,9 @@ module PrettyPrint (
         Doc,            -- Abstract, instance of Show
         PprM,
 
+        -- * Annotation
+        mannotate,
+
         -- * Primitive Documents
         empty,
         semi, comma, colon, dcolon, space, equals, arrow,
@@ -46,6 +49,10 @@ import Prelude hiding ((<>))
 infixl 6 <>
 infixl 6 <+>
 infixl 5 $$, $+$
+
+mannotate :: Maybe a -> Doc a -> Doc a
+mannotate (Just a) = fmap $ HPJ.annotate a
+mannotate Nothing = id
 
 -- ---------------------------------------------------------------------------
 -- The interface
