@@ -51,6 +51,17 @@ attachAnnPat :: PatKey -> Annotation -> AnnotatedPat -> AnnotatedPat
 attachAnnPat = attachAnn
 
 type Color = (Word8, Word8, Word8)
+
+colorByANSI :: Color -> String -> String
+colorByANSI (r,g,b) str = concat ["\ESC[48;2;", show r, ";", show g, ";", show b, "m", str, "\ESC[0m"]
+
+red, blue, green, purple, orange :: Color
+red = (255,0,0)
+blue = (0,0,255)
+green = (0,127,0)
+purple = (100,0,200)
+orange = (200,100,0)
+
 data Annotation = Annotation { color :: Color, info :: Maybe String }
   deriving (Show)
 
@@ -59,11 +70,11 @@ pprintColoured annexp = foldr colourSpan source spans
   where
     (source, spans) = pprintSpans annexp
     colourSpan :: Span Annotation -> String -> String
-    colourSpan (Span { spanStart, spanLength, spanAnnotation }) str =
+    colourSpan (Span { spanStart, spanLength, spanAnnotation = Annotation { color, info } }) str =
       let (pre, rest) = splitAt spanStart str
           (text, post) = splitAt spanLength rest
       in
-      pre ++ "\ESC[45m" ++ text ++ "\ESC[0m" ++ post
+      pre ++ colorByANSI color text ++ post
 
 type Doc = PrettyPrint.Doc Annotation
 
