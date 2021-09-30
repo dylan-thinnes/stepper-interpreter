@@ -42,17 +42,6 @@ import Ppr qualified as P
 
 -- Utils
 
-prexp :: Q Exp -> Q Exp
-prexp qexp = [| putStrLn $(qexp >>= stringE . pprint) |]
-
-updateList :: Int -> [a] -> (a -> a) -> [a]
-updateList i l f
-  | 0 <= i && i < length l = take i l ++ [f $ l !! i] ++ drop (i + 1) l
-  | otherwise = l
-
-setList :: Int -> [a] -> a -> [a]
-setList i l x = updateList i l (const x)
-
 zipConcatM :: Monad m => (a -> b -> m [c]) -> [a] -> [b] -> m [c]
 zipConcatM f as bs = concat <$> zipWithM f as bs
 
@@ -74,75 +63,6 @@ definitions (LetE decs exp) = do
       _ <- undefined
       []
     _ -> []
-
-data PatternMatch
-  = Success [Either (Pat, Exp) (Name, Exp)]
-  | Failure [String]
-  deriving (Show)
-
-instance Semigroup PatternMatch where
-  -- Failures override Successes
-  (<>) (Failure lMsgs) (Failure rMsgs) = Failure $ lMsgs ++ rMsgs
-  (<>) (Failure lMsgs) _ = Failure lMsgs
-  (<>) _ (Failure rMsgs) = Failure rMsgs
-
-  -- Successful matches merge
-  (<>) (Success lMatches) (Success rMatches) = Success $ lMatches ++ rMatches
-
-instance Monoid PatternMatch where
-  mempty = Success []
-
-flattenApps :: Exp -> (Exp, [Exp]) -- TODO: Handle infix applications & type applications
-flattenApps = fmap reverse . go
-  where
-    -- Build up argument list in reverse, to avoid O(n^2)
-    go (AppE f arg) = fmap (arg:) $ go f
-    go exp = (exp, [])
-
-matchPat :: Pat -> Exp -> PatternMatch
-matchPat (LitP pat) (LitE exp)
-  | pat == exp = Success []
-  | otherwise = Failure [concat ["Literals don't match: pattern ", show pat, ", expression ", show exp, "."]]
-matchPat (VarP name) exp = Success [Right (name, exp)]
-matchPat (TupP pats) (TupE exps)
-  | length pats /= length exps = Failure ["Tuples are of different lengths."]
-  | any isNothing exps = Failure ["Cannot pattern match over partially applied tuples."]
-  | otherwise = fold $ zipWith matchPat pats (catMaybes exps)
-matchPat (UnboxedTupP _) _ = error "matchPat: Unsupported pat UnboxedTupP"
-matchPat (UnboxedSumP _ _ _) _ = error "matchPat: Unsupported pat UnboxedSumP"
-matchPat (ConP patConName pats) exp
-  | (ConE expConName, args) <- flattenApps exp
-  = if
-      | expConName /= patConName -> Failure ["Pattern and expression have different constructor names."]
-      | length pats /= length args -> Failure ["Pattern and expression have different number of args to constructors - is the expression constructor partially applied?"]
-      | otherwise -> fold $ zipWith matchPat pats args
--- matchPat (InfixP patL _ patR) _ = undefined
-matchPat (UInfixP patL _ patR) _ = error "matchPat: Unsupported pat UInfixP"
-matchPat (ParensP pat) exp = matchPat pat exp
-matchPat pat (ParensE exp) = matchPat pat exp
--- matchPat (TildeP pat) _ = undefined -- TODO: How does laziness affect the use of matchPat?
--- matchPat (BangP pat) _ = undefined
-matchPat (AsP name pat) exp = Success [Right (name, exp)] <> matchPat pat exp
-matchPat WildP _ = Success []
--- matchPat (RecP _ fieldPats) _ = undefined
-matchPat (ListP pats) (ListE exps)
-  | length pats /= length exps = Failure ["List pattern and list expression have different lengths."]
-  | otherwise = fold $ zipWith matchPat pats exps
-matchPat (SigP pat type_) _ = error "matchPat: Unsupported pat SigP"
-matchPat (ViewP exp pat) _ = error "matchPat: Unsupported pat ViewP"
-matchPat pat exp =
-  let (f, args) = flattenApps exp
-  in
-  if
-    | length args == 0
-    -> Failure ["Pattern and expression do not match."]
-    | (ConE _) <- f
-    -> Failure ["Pattern and expression do not match."]
-    | (VarE fName) <- f
-    , show fName == "GHC.Err.error" -- TODO: Check fName is error w/o string-typing
-    -> Failure ["Pattern forces the evaluation of an error."]
-    | otherwise
-    -> Success [Left (pat, exp)]
 
 patNames :: Pat -> [Name]
 patNames (LitP _) = []
