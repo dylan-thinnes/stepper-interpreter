@@ -14,7 +14,6 @@
 module Evaluator where
 
 import "base" Control.Monad (zipWithM)
-import "base" Data.Bifunctor
 import "base" Data.Foldable (fold)
 import "base" Data.Functor.Compose
 import "base" Data.Functor.Const
@@ -125,35 +124,6 @@ data MatchFailure
 type MatchSuccess = [(Pat, Exp)]
 type MatchMonad a = Either MatchFailure a
 type MatchResult = MatchMonad MatchSuccess
-
-listifyKey :: (a, b) -> ([a], b)
-listifyKey = first (\x -> [x])
-
-prependKey :: a -> ([a], b) -> ([a], b)
-prependKey a = first (a :)
-
-type Ann a f = Product (Const a) f
-type RecKey t = Ann [Key (R.Base t)] (R.Base t)
-
-annKeys :: (R.Recursive t, Keyed (R.Base t)) => t -> Fix (RecKey t)
-annKeys exp = R.ana go ([], exp)
-  where
-    go (prekeys, exp) = Pair (Const prekeys) (first (\x -> prekeys ++ [x]) <$> projectK exp)
-
-deann :: R.Corecursive t => Fix (RecKey t) -> t
-deann = R.hoist (\(Pair _ tf) -> tf)
-
-deannWrapped :: R.Corecursive t => R.Base t (Fix (RecKey t)) -> t
-deannWrapped = R.embed . fmap deann
-
-toKeyPair :: Fix (Ann a f) -> (a, f (Fix (Ann a f)))
-toKeyPair (Fix (Pair (Const key) expf)) = (key, expf)
-
-toKeyPairDeann :: R.Corecursive t => Fix (RecKey t) -> ([Key (R.Base t)], t)
-toKeyPairDeann ann =
-  let (key, expf) = toKeyPair ann
-  in
-  (key, R.embed $ fmap deann expf)
 
 -- TODO: Handle infix applications & type applications (URGENT!)
 flattenAppsKeyed :: Fix (RecKey Exp) -> (Fix (RecKey Exp), [Fix (RecKey Exp)])

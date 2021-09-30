@@ -32,15 +32,12 @@ import Lift
 import Ppr.Lib hiding (Doc)
 import qualified Ppr.Lib
 
-type Annotated f = Fix (Product (Const (Maybe Annotation)) f)
+type Annotated f = Fix (Ann (Maybe Annotation) f)
 type AnnotatedExp = Annotated ExpF
 type AnnotatedPat = Annotated PatF
 
 noann :: (Functor f, R.Corecursive t, R.Recursive t, f ~ R.Base t) => t -> Annotated f
 noann = R.hoist (Pair (Const Nothing))
-
-deann :: (Functor f, R.Corecursive t, R.Recursive t, f ~ R.Base t) => Annotated f -> t
-deann = R.hoist (\(Pair _ f) -> f)
 
 attachAnn :: (Adjustable f, Functor f) => [Key f] -> Annotation -> Annotated f -> Annotated f
 attachAnn key ann = adjustRecursiveG setAnn modify key
