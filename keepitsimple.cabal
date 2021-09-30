@@ -26,9 +26,9 @@ library
         Evaluator,
         Indexing,
         Lift,
-        PrettyPrint,
         Ppr,
-        THLibMapCopy
+        Ppr.Lib,
+        Ppr.THLibMapCopy
 
     -- Modules included in this library but not exported.
     -- other-modules:

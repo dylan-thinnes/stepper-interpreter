@@ -4,6 +4,8 @@
 -- | contains a prettyprinter for the
 -- Template Haskell datatypes
 
+-- | MODIFIED TO SUPPORT ANNOTATIONS AROUND NODES
+
 module Ppr where
     -- All of the exports from this module should
     -- be "public" functions.  The main module TH
@@ -11,8 +13,6 @@ module Ppr where
 
 import Text.PrettyPrint.Annotated (render, Span(..), renderSpans)
 import qualified Text.PrettyPrint.Annotated (annotate)
-import PrettyPrint hiding (Doc)
-import qualified PrettyPrint
 import Language.Haskell.TH.Syntax
 import Data.Word ( Word8 )
 import Data.Char ( toLower, chr)
@@ -20,6 +20,7 @@ import GHC.Show  ( showMultiLineString )
 import GHC.Lexeme( startsVarSym )
 import Data.Ratio ( numerator, denominator )
 import Prelude hiding ((<>))
+
 import Data.Functor.Const
 import Data.Functor.Product
 import Data.Fix
@@ -27,6 +28,9 @@ import Data.Key (adjust, Key(..), Adjustable(..))
 
 import qualified Data.Functor.Foldable as R
 import Lift
+
+import Ppr.Lib hiding (Doc)
+import qualified Ppr.Lib
 
 type Annotated f = Fix (Product (Const (Maybe Annotation)) f)
 type AnnotatedExp = Annotated ExpF
@@ -79,7 +83,7 @@ pprintColoured annexp = foldr colourSpan source spans
       in
       pre ++ colorByANSI color text ++ post
 
-type Doc = PrettyPrint.Doc Annotation
+type Doc = Ppr.Lib.Doc Annotation
 
 nestDepth :: Int
 nestDepth = 4

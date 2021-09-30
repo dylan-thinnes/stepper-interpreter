@@ -2,7 +2,7 @@
 
 -- | Monadic front-end to Text.PrettyPrint
 
-module PrettyPrint (
+module Ppr.Lib (
 
         -- * The document type
         Doc,            -- Abstract, instance of Show
@@ -42,8 +42,8 @@ import Language.Haskell.TH.Syntax
     (Uniq, Name(..), showName', NameFlavour(..), NameIs(..))
 import qualified Text.PrettyPrint.Annotated as HPJ
 import Control.Monad (liftM, liftM2, ap)
-import THLibMapCopy ( Map )
-import qualified THLibMapCopy as Map ( lookup, insert, empty )
+import Ppr.THLibMapCopy ( Map )
+import qualified Ppr.THLibMapCopy as Map ( lookup, insert, empty )
 import Prelude hiding ((<>))
 
 infixl 6 <>

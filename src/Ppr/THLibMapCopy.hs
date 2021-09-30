@@ -1,7 +1,8 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE Safe #-}
 
--- This is a non-exposed internal module
+-- This is a non-exposed internal module from template-haskell, copied into our
+-- library, in order to reimplement pretty printing.
 --
 -- The code in this module has been ripped from containers-0.5.5.1:Data.Map.Base [1] almost
 -- verbatimely to avoid a dependency of 'template-haskell' on the containers package.
@@ -10,11 +11,11 @@
 --
 -- The original code is BSD-licensed and copyrighted by Daan Leijen, Andriy Palamarchuk, et al.
 
-module THLibMapCopy
+module Ppr.THLibMapCopy
     ( Map
     , empty
     , insert
-    , THLibMapCopy.lookup
+    , Ppr.THLibMapCopy.lookup
     ) where
 
 import Prelude
