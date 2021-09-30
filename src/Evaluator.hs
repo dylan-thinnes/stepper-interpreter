@@ -63,25 +63,6 @@ definitions (LetE decs exp) = do
       []
     _ -> []
 
-patNames :: Pat -> [Name]
-patNames (LitP _) = []
-patNames (VarP name) = [name]
-patNames (TupP pats) = foldMap patNames pats
-patNames (UnboxedTupP _) = error "patNames: Unsupported pat UnboxedTupP"
-patNames (UnboxedSumP _ _ _) = error "patNames: Unsupported pat UnboxedSumP"
-patNames (ConP _ pats) = foldMap patNames pats
-patNames (InfixP patL _ patR) = foldMap patNames [patL, patR]
-patNames (UInfixP patL _ patR) = error "patNames: Unsupported pat UInfixP"
-patNames (ParensP pat) = patNames pat
-patNames (TildeP pat) = patNames pat -- TODO: How does laziness affect the use of patNames?
-patNames (BangP pat) = patNames pat
-patNames (AsP name pat) = name : patNames pat
-patNames (WildP) = []
-patNames (RecP _ fieldPats) = foldMap (patNames . snd) fieldPats
-patNames (ListP pats) = foldMap patNames pats
-patNames (SigP pat type_) = error "patNames: Unsupported pat SigP"
-patNames (ViewP exp pat) = error "patNames: Unsupported pat ViewP"
-
 data ReductionResult a
   = NoReductionsAvailable
   | ReduceErrors [String]
@@ -115,6 +96,35 @@ tryReduce environment exp =
     CondE cond true false -> do
       undefined
 
+-- ============================ PATTERN MATCHING
+
+-- Extract bound names from a pattern, mainly useful for determining which
+-- pattern defines which variables in an environment
+patNames :: Pat -> [Name]
+patNames (LitP _) = []
+patNames (VarP name) = [name]
+patNames (TupP pats) = foldMap patNames pats
+patNames (UnboxedTupP _) = error "patNames: Unsupported pat UnboxedTupP"
+patNames (UnboxedSumP _ _ _) = error "patNames: Unsupported pat UnboxedSumP"
+patNames (ConP _ pats) = foldMap patNames pats
+patNames (InfixP patL _ patR) = foldMap patNames [patL, patR]
+patNames (UInfixP patL _ patR) = error "patNames: Unsupported pat UInfixP"
+patNames (ParensP pat) = patNames pat
+patNames (TildeP pat) = patNames pat -- TODO: How does laziness affect the use of patNames?
+patNames (BangP pat) = patNames pat
+patNames (AsP name pat) = name : patNames pat
+patNames (WildP) = []
+patNames (RecP _ fieldPats) = foldMap (patNames . snd) fieldPats
+patNames (ListP pats) = foldMap patNames pats
+patNames (SigP pat type_) = error "patNames: Unsupported pat SigP"
+patNames (ViewP exp pat) = error "patNames: Unsupported pat ViewP"
+
+-- Matching between patterns and expressions can fail in three ways:
+-- - The pattern and the expression are known not to match
+-- - The expression may or may not match the pattern - it needs to be reduced
+--   further to say for certain
+-- - The pattern and the expression are incompatible for pattern matching in
+--   some way that the type system should have disallowed beforehand
 data MatchFailure
   = Mismatch (PatKey, ExpKey) -- Pattern & expression both in WHNF and do not match - this pattern fails
   | NeedsReduction (PatKey, ExpKey) -- Specific subexpression needs further reduction due to given subpattern before pattern can be determined to match or fail
@@ -206,71 +216,3 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
           = mismatch
           | otherwise
           = needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
-
-e2eMatchDemo :: Q Pat -> Q Exp -> Q Exp
-e2eMatchDemo mpat mexp = do
-  pat <- mpat
-  exp <- mexp
-  case matchPatKeyed pat exp of
-    Left (Mismatch (patKey, expKey)) ->
-      runIO $ putStrLn $ unlines
-        [ P.colorByANSI P.orange "Following pattern and expression do not match."
-        --, ""
-        --, "patkey: " ++ show patKey
-        --, "expKey: " ++ show expKey
-        --, ""
-        , P.boldByANSI "pattern: " ++ P.pprintColoured (P.attachAnn patKey (P.Annotation P.orange Nothing) (P.noann pat))
-        , P.boldByANSI "expression: ", P.pprintColoured (P.attachAnn expKey (P.Annotation P.orange Nothing) (P.noann exp))
-        ]
-    Left (NeedsReduction (patKey, expKey)) ->
-      runIO $ putStrLn $ unlines
-        [ P.colorByANSI P.purple "Following expression needs further reduction to conclusively match."
-        --, ""
-        --, "patkey: " ++ show patKey
-        --, "expKey: " ++ show expKey
-        --, ""
-        , P.boldByANSI "pattern: " ++ P.pprintColoured (P.attachAnn patKey (P.Annotation P.purple Nothing) (P.noann pat))
-        , P.boldByANSI "expression: ", P.pprintColoured (P.attachAnn expKey (P.Annotation P.purple Nothing) (P.noann exp))
-        ]
-    Left (UnexpectedError msg (patKey, expKey)) ->
-      runIO $ putStrLn $ unlines
-        [ P.colorByANSI P.red "Unexpected error (type system should catch this!): " ++ show msg
-        --, ""
-        --, "patkey: " ++ show patKey
-        --, "expKey: " ++ show expKey
-        --, ""
-        , P.boldByANSI "pattern: " ++ P.pprintColoured (P.attachAnn patKey (P.Annotation P.red Nothing) (P.noann pat))
-        , P.boldByANSI "expression: ", P.pprintColoured (P.attachAnn expKey (P.Annotation P.red Nothing) (P.noann exp))
-        ]
-    Right bound ->
-      runIO $ putStrLn $ unlines
-        [ P.colorByANSI P.green "Following pattern and expression match."
-        --, ""
-        --, "patkey: " ++ show patKey
-        --, "expKey: " ++ show expKey
-        --, ""
-        , P.boldByANSI "pattern: " ++ P.pprintColoured (P.noann pat)
-        , P.boldByANSI "expression: ", P.pprintColoured (P.noann exp)
-        ]
-  lift ()
-
-e2eMatchExample :: Q Exp
-e2eMatchExample = do
-  runIO $ putStrLn ""
-  e2eMatchDemo [p| (Just 1, Just _) |] [e| (Just 1, Nothing) |]
-  e2eMatchDemo [p| (Just 1, Just _) |] [e| (Just 1, x) |]
-  e2eMatchDemo [p| (Just 1, Just _) |] [e| (Just 1, Just x) |]
-  e2eMatchDemo [p| Just _ |] [e| let x = 2 in Nothing |]
-  e2eMatchDemo [p| Just 2 |] [e| let x = 2 in Just x |]
-  e2eMatchDemo [p| Just _ |] [e| let x = 2 in Just x |]
-  e2eMatchDemo [p| (Just 1, Just 2) |] [e| (Just 1, let x = 2 in Nothing) |]
-  lift ()
-
-p = $(lift =<< [p| (Just 2, Just Nothing) |])
-e = $(lift =<< [e| (Just 2, Just x) |])
-(patkey, expkey) =
-  case matchPatKeyed p e of
-    Left (Mismatch keys) -> keys
-    Left (NeedsReduction keys) -> keys
-    Left (UnexpectedError msg keys) -> keys
-    Right _ -> error "can't make patKey / expKey because expressions match"

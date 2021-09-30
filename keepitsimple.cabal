@@ -28,7 +28,8 @@ library
         Lift,
         Ppr,
         Ppr.Lib,
-        Ppr.THLibMapCopy
+        Ppr.THLibMapCopy,
+        Demos.Matching
 
     -- Modules included in this library but not exported.
     -- other-modules:
