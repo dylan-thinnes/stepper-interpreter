@@ -1,4 +1,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE ImportQualifiedPost #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DeriveLift #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE PackageImports #-}
@@ -7,8 +10,12 @@ module Lift where
 
 import "base" Foreign.ForeignPtr
 
+import "deriving-compat" Text.Show.Deriving
+
 import "template-haskell" Language.Haskell.TH
 import "template-haskell" Language.Haskell.TH.Syntax
+
+import "recursion-schemes" Data.Functor.Foldable.TH qualified as R
 
 instance Lift Bytes where
     lift _ = error "Cannot lift Bytes."
@@ -59,3 +66,10 @@ deriving instance Lift Type
 deriving instance Lift Lit
 deriving instance Lift Name
 deriving instance Lift Exp
+
+R.makeBaseFunctor ''Exp
+R.makeBaseFunctor ''Pat
+
+deriveShow1 ''ExpF
+deriveShow1 ''PatF
+

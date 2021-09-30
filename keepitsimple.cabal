@@ -25,7 +25,10 @@ library
     exposed-modules:
         Evaluator,
         Indexing,
-        Lift
+        Lift,
+        PrettyPrint,
+        Ppr,
+        THLibMapCopy
 
     -- Modules included in this library but not exported.
     -- other-modules:
@@ -41,8 +44,10 @@ library
         distributive,
         lens,
         keys,
+        pretty,
         recursion-schemes,
-        template-haskell
+        template-haskell,
+        ghc-boot-th
 
     hs-source-dirs:   src
     default-language: Haskell2010

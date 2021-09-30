@@ -26,25 +26,16 @@ import "base" GHC.Generics
 import qualified "containers" Data.Map as M
 import           "containers" Data.Map (Map)
 
-import "deriving-compat" Text.Show.Deriving
-
 import "data-fix" Data.Fix (Fix(..))
 
 import "keys" Data.Key (Key(..), Keyed(..), keyed, Adjustable(..))
 
-import "recursion-schemes" Data.Functor.Foldable qualified as R
-import "recursion-schemes" Data.Functor.Foldable.TH qualified as R
-
 import "template-haskell" Language.Haskell.TH
 import "template-haskell" Language.Haskell.TH.Syntax (Lift(..))
 
+import "recursion-schemes" Data.Functor.Foldable qualified as R
+
 import Lift
-
-R.makeBaseFunctor ''Exp
-R.makeBaseFunctor ''Pat
-
-deriveShow1 ''ExpF
-deriveShow1 ''PatF
 
 -- Utils
 
