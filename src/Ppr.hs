@@ -1,4 +1,5 @@
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE FlexibleInstances #-}
 -- | contains a prettyprinter for the
 -- Template Haskell datatypes
@@ -8,7 +9,7 @@ module Ppr where
     -- be "public" functions.  The main module TH
     -- re-exports them all.
 
-import Text.PrettyPrint.Annotated (render)
+import Text.PrettyPrint.Annotated (render, Span(..), renderSpans)
 import qualified Text.PrettyPrint.Annotated (annotate)
 import PrettyPrint hiding (Doc)
 import qualified PrettyPrint
@@ -22,6 +23,7 @@ import Prelude hiding ((<>))
 import Data.Functor.Const
 import Data.Functor.Product
 import Data.Fix
+import Data.Key (adjust)
 
 import qualified Data.Functor.Foldable as R
 import Lift
@@ -35,8 +37,27 @@ noann = R.hoist (Pair (Const Nothing))
 deann :: AnnotatedExp -> Exp
 deann = R.hoist (\(Pair _ f) -> f)
 
+attachAnn :: ExpKey -> Annotation -> AnnotatedExp -> AnnotatedExp
+attachAnn key ann = adjustRecursiveG setAnn modify key
+  where
+    setAnn (Fix (Pair _ expf)) = Fix $ Pair (Const (Just ann)) expf
+    modify f key (Pair ann expf) = Pair ann $ adjust f key expf
+
 type Color = (Word8, Word8, Word8)
 data Annotation = Annotation { color :: Color, info :: Maybe String }
+  deriving (Show)
+
+pprintColoured :: Ppr a => a -> String
+pprintColoured annexp = foldr colourSpan source spans
+  where
+    (source, spans) = pprintSpans annexp
+    colourSpan :: Span Annotation -> String -> String
+    colourSpan (Span { spanStart, spanLength, spanAnnotation }) str =
+      let (pre, rest) = splitAt spanStart str
+          (text, post) = splitAt spanLength rest
+      in
+      pre ++ "\ESC[45m" ++ text ++ "\ESC[0m" ++ post
+
 type Doc = PrettyPrint.Doc Annotation
 
 nestDepth :: Int
@@ -58,6 +79,9 @@ parensIf False d = d
 
 pprint :: Ppr a => a -> String
 pprint x = render $ to_HPJ_Doc $ ppr x
+
+pprintSpans :: Ppr a => a -> (String, [Span Annotation])
+pprintSpans x = renderSpans $ to_HPJ_Doc $ ppr x
 
 class Ppr a where
     ppr :: a -> Doc
@@ -131,6 +155,9 @@ instance Ppr ModuleInfo where
 ------------------------------
 instance Ppr Exp where
     ppr = pprExp noPrec . noann
+
+instance Ppr AnnotatedExp where
+    ppr = pprExp noPrec
 
 pprPrefixOcc :: Name -> Doc
 -- Print operators with parens around them
