@@ -356,38 +356,46 @@ instance Ppr Pat where
     ppr = pprPat noPrec
 
 pprPat :: Precedence -> Pat -> Doc
-pprPat i (LitP l)     = pprLit i l
-pprPat _ (VarP v)     = pprName' Applied v
-pprPat i (TupP ps)
+pprPat prec pat = R.para alg pat prec
+  where
+    alg patf prec = pprPatF prec patf
+
+pprPat' :: Precedence -> (Pat, Precedence -> Doc) -> Doc
+pprPat' prec (_, cont) = cont prec
+
+pprPatF :: Precedence -> PatF (Pat, Precedence -> Doc) -> Doc
+pprPatF i (LitPF l)     = pprLit i l
+pprPatF _ (VarPF v)     = pprName' Applied v
+pprPatF i (TupPF ps)
   | [_] <- ps
-  = pprPat i (ConP (tupleDataName 1) ps)
+  = pprPat i (ConP (tupleDataName 1) (fst <$> ps))
   | otherwise
   = parens (commaSep ps)
-pprPat _ (UnboxedTupP ps) = hashParens (commaSep ps)
-pprPat _ (UnboxedSumP p alt arity) = unboxedSumBars (ppr p) alt arity
-pprPat i (ConP s ps)  = parensIf (i >= appPrec) $ pprName' Applied s
-                                              <+> sep (map (pprPat appPrec) ps)
-pprPat _ (ParensP p)  = parens $ pprPat noPrec p
-pprPat i (UInfixP p1 n p2)
-                      = parensIf (i > unopPrec) (pprPat unopPrec p1 <+>
+pprPatF _ (UnboxedTupPF ps) = hashParens (commaSep ps)
+pprPatF _ (UnboxedSumPF p alt arity) = unboxedSumBars (ppr p) alt arity
+pprPatF i (ConPF s ps)  = parensIf (i >= appPrec) $ pprName' Applied s
+                                              <+> sep (map (pprPat' appPrec) ps)
+pprPatF _ (ParensPF p)  = parens $ pprPat' noPrec p
+pprPatF i (UInfixPF p1 n p2)
+                      = parensIf (i > unopPrec) (pprPat' unopPrec p1 <+>
                                                  pprName' Infix n   <+>
-                                                 pprPat unopPrec p2)
-pprPat i (InfixP p1 n p2)
-                      = parensIf (i >= opPrec) (pprPat opPrec p1 <+>
+                                                 pprPat' unopPrec p2)
+pprPatF i (InfixPF p1 n p2)
+                      = parensIf (i >= opPrec) (pprPat' opPrec p1 <+>
                                                 pprName' Infix n <+>
-                                                pprPat opPrec p2)
-pprPat i (TildeP p)   = parensIf (i > noPrec) $ char '~' <> pprPat appPrec p
-pprPat i (BangP p)    = parensIf (i > noPrec) $ char '!' <> pprPat appPrec p
-pprPat i (AsP v p)    = parensIf (i > noPrec) $ ppr v <> text "@"
-                                                      <> pprPat appPrec p
-pprPat _ WildP        = text "_"
-pprPat _ (RecP nm fs)
+                                                pprPat' opPrec p2)
+pprPatF i (TildePF p)   = parensIf (i > noPrec) $ char '~' <> pprPat' appPrec p
+pprPatF i (BangPF p)    = parensIf (i > noPrec) $ char '!' <> pprPat' appPrec p
+pprPatF i (AsPF v p)    = parensIf (i > noPrec) $ ppr v <> text "@"
+                                                      <> pprPat' appPrec p
+pprPatF _ WildPF        = text "_"
+pprPatF _ (RecPF nm fs)
  = parens $     ppr nm
             <+> braces (sep $ punctuate comma $
                         map (\(s,p) -> ppr s <+> equals <+> ppr p) fs)
-pprPat _ (ListP ps) = brackets (commaSep ps)
-pprPat i (SigP p t) = parensIf (i > noPrec) $ ppr p <+> dcolon <+> ppr t
-pprPat _ (ViewP e p) = parens $ pprExp noPrec (noann e) <+> text "->" <+> pprPat noPrec p
+pprPatF _ (ListPF ps) = brackets (commaSep ps)
+pprPatF i (SigPF p t) = parensIf (i > noPrec) $ ppr p <+> dcolon <+> ppr t
+pprPatF _ (ViewPF e p) = parens $ pprExp noPrec (noann e) <+> text "->" <+> pprPat' noPrec p
 
 ------------------------------
 instance Ppr Dec where
