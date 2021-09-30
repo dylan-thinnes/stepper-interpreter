@@ -218,7 +218,7 @@ type RecKey t = Ann [Key (R.Base t)] (R.Base t)
 annKeys :: (R.Recursive t, Keyed (R.Base t)) => t -> Fix (RecKey t)
 annKeys exp = R.ana go ([], exp)
   where
-    go (prekeys, exp) = Pair (Const prekeys) (first (:prekeys) <$> projectK exp)
+    go (prekeys, exp) = Pair (Const prekeys) (first (\x -> prekeys ++ [x]) <$> projectK exp)
 
 deann :: R.Corecursive t => Fix (RecKey t) -> t
 deann = R.hoist (\(Pair _ tf) -> tf)
