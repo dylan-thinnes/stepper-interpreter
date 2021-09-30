@@ -55,6 +55,9 @@ type Color = (Word8, Word8, Word8)
 colorByANSI :: Color -> String -> String
 colorByANSI (r,g,b) str = concat ["\ESC[48;2;", show r, ";", show g, ";", show b, "m", str, "\ESC[0m"]
 
+boldByANSI :: String -> String
+boldByANSI str = "\ESC[1m" ++ str ++ "\ESC[0m"
+
 red, blue, green, purple, orange :: Color
 red = (255,0,0)
 blue = (0,0,255)
