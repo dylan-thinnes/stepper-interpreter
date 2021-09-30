@@ -23,25 +23,32 @@ import Prelude hiding ((<>))
 import Data.Functor.Const
 import Data.Functor.Product
 import Data.Fix
-import Data.Key (adjust)
+import Data.Key (adjust, Key(..), Adjustable(..))
 
 import qualified Data.Functor.Foldable as R
 import Lift
 
 type Annotated f = Fix (Product (Const (Maybe Annotation)) f)
 type AnnotatedExp = Annotated ExpF
+type AnnotatedPat = Annotated PatF
 
-noann :: Exp -> AnnotatedExp
+noann :: (Functor f, R.Corecursive t, R.Recursive t, f ~ R.Base t) => t -> Annotated f
 noann = R.hoist (Pair (Const Nothing))
 
-deann :: AnnotatedExp -> Exp
+deann :: (Functor f, R.Corecursive t, R.Recursive t, f ~ R.Base t) => Annotated f -> t
 deann = R.hoist (\(Pair _ f) -> f)
 
-attachAnn :: ExpKey -> Annotation -> AnnotatedExp -> AnnotatedExp
+attachAnn :: (Adjustable f, Functor f) => [Key f] -> Annotation -> Annotated f -> Annotated f
 attachAnn key ann = adjustRecursiveG setAnn modify key
   where
     setAnn (Fix (Pair _ expf)) = Fix $ Pair (Const (Just ann)) expf
     modify f key (Pair ann expf) = Pair ann $ adjust f key expf
+
+attachAnnExp :: ExpKey -> Annotation -> AnnotatedExp -> AnnotatedExp
+attachAnnExp = attachAnn
+
+attachAnnPat :: PatKey -> Annotation -> AnnotatedPat -> AnnotatedPat
+attachAnnPat = attachAnn
 
 type Color = (Word8, Word8, Word8)
 data Annotation = Annotation { color :: Color, info :: Maybe String }
@@ -212,7 +219,7 @@ pprExpF _ (InfixEF me1 op me2) = parens $ pprMaybeExp noPrec me1
                                     <+> pprInfixExp (fst op)
                                     <+> pprMaybeExp noPrec me2
 pprExpF i (LamEF [] e) = pprExp' i e -- #13856
-pprExpF i (LamEF ps e) = parensIf (i > noPrec) $ char '\\' <> hsep (map (pprPat appPrec) ps)
+pprExpF i (LamEF ps e) = parensIf (i > noPrec) $ char '\\' <> hsep (map (pprPatNoAnn appPrec) ps)
                                            <+> text "->" <+> ppr e
 pprExpF i (LamCaseEF ms) = parensIf (i > noPrec)
                        $ text "\\case" $$ nest nestDepth (ppr ms)
@@ -353,22 +360,28 @@ pprString s = vcat (map text (showMultiLineString s))
 
 ------------------------------
 instance Ppr Pat where
+    ppr = pprPatNoAnn noPrec
+
+instance Ppr AnnotatedPat where
     ppr = pprPat noPrec
 
-pprPat :: Precedence -> Pat -> Doc
+pprPat :: Precedence -> AnnotatedPat -> Doc
 pprPat prec pat = R.para alg pat prec
   where
-    alg patf prec = pprPatF prec patf
+    alg (Pair (Const mann) patf) prec = mannotate mann $ pprPatF prec patf
 
-pprPat' :: Precedence -> (Pat, Precedence -> Doc) -> Doc
+pprPatNoAnn :: Precedence -> Pat -> Doc
+pprPatNoAnn prec pat = pprPat prec (noann pat)
+
+pprPat' :: Precedence -> (AnnotatedPat, Precedence -> Doc) -> Doc
 pprPat' prec (_, cont) = cont prec
 
-pprPatF :: Precedence -> PatF (Pat, Precedence -> Doc) -> Doc
+pprPatF :: Precedence -> PatF (AnnotatedPat, Precedence -> Doc) -> Doc
 pprPatF i (LitPF l)     = pprLit i l
 pprPatF _ (VarPF v)     = pprName' Applied v
 pprPatF i (TupPF ps)
   | [_] <- ps
-  = pprPat i (ConP (tupleDataName 1) (fst <$> ps))
+  = pprPat i (Fix $ Pair (Const Nothing) $ ConPF (tupleDataName 1) (fst <$> ps))
   | otherwise
   = parens (commaSep ps)
 pprPatF _ (UnboxedTupPF ps) = hashParens (commaSep ps)
@@ -684,7 +697,7 @@ instance Ppr RuleBndr where
 
 ------------------------------
 instance Ppr Clause where
-    ppr (Clause ps rhs ds) = hsep (map (pprPat appPrec) ps) <+> pprBody True rhs
+    ppr (Clause ps rhs ds) = hsep (map (pprPatNoAnn appPrec) ps) <+> pprBody True rhs
                              $$ where_clause ds
 
 ------------------------------
