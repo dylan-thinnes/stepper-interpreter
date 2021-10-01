@@ -199,7 +199,7 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
           pure $ (VarP name, deannWrapped exp) : submatches
         match WildPF _ = Right []
         match (RecPF _ fieldPats) _ = error "matchPatKeyed: Unsupported pat RecP" -- TODO: Urgently need to support field patterns
-        match (ListPF pats) (ListEF exps)
+        match (ListPF pats) (ListEF exps) -- TODO: handle conses <=> list literals
           | length pats /= length exps = unexpectedError "List pattern and list expression have different lengths."
           | otherwise = zipConcatM go pats exps
         match (SigPF pat type_) _ = error "matchPatKeyed: Unsupported pat SigP"
