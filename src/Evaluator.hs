@@ -116,7 +116,7 @@ patNames' pat = [name | name@(Name _ flavour@(NameU _)) <- childrenBi pat]
 data MatchFailure
   = Mismatch (PatKey, ExpKey) -- Pattern & expression both in WHNF and do not match - this pattern fails
   | NeedsReduction (PatKey, ExpKey) -- Specific subexpression needs further reduction due to given subpattern before pattern can be determined to match or fail
-  | UnexpectedError String (PatKey, ExpKey) -- For errors that shouldn't occur if the type-system is checking, e.g. tuple arity mismatch
+  | UnexpectedErrorMatch String (PatKey, ExpKey) -- For errors that shouldn't occur if the type-system is checking, e.g. tuple arity mismatch
   deriving (Show, Lift)
 
 type MatchSuccess = [(Pat, Exp)]
@@ -146,7 +146,7 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
         needsReduction = Left $ NeedsReduction (patKey, expKey)
 
         unexpectedError :: String -> MatchMonad a
-        unexpectedError msg = Left $ UnexpectedError msg (patKey, expKey)
+        unexpectedError msg = Left $ UnexpectedErrorMatch msg (patKey, expKey)
 
         match :: PatF (Fix (RecKey Pat)) -> ExpF (Fix (RecKey Exp)) -> MatchResult
         match (LitPF pat) (LitEF exp)

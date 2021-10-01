@@ -37,7 +37,7 @@ e2eMatchDemo mpat mexp = do
         , P.boldByANSI "pattern: " ++ P.pprintColoured (P.removeBaseQualifications $ P.attachAnn patKey (P.Annotation P.purple Nothing) (P.noann pat))
         , P.boldByANSI "expression: ", P.pprintColoured (P.removeBaseQualifications $ P.attachAnn expKey (P.Annotation P.purple Nothing) (P.noann exp))
         ]
-    Left (UnexpectedError msg (patKey, expKey)) ->
+    Left (UnexpectedErrorMatch msg (patKey, expKey)) ->
       runIO $ putStrLn $ unlines
         [ P.colorByANSI P.red "Unexpected error (type system should catch this!): " ++ show msg
         --, ""
@@ -77,5 +77,5 @@ e = $(lift =<< [e| (Just 2, Just x) |])
   case matchPatKeyed p e of
     Left (Mismatch keys) -> keys
     Left (NeedsReduction keys) -> keys
-    Left (UnexpectedError msg keys) -> keys
+    Left (UnexpectedErrorMatch msg keys) -> keys
     Right _ -> error "can't make patKey / expKey because expressions match"
