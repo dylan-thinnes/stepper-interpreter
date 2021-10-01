@@ -67,36 +67,28 @@ definitions (LetE decs exp) = do
       []
     _ -> []
 
-data ReductionResult a
-  = NoReductionsAvailable
-  | ReduceErrors [String]
-  | ReductionMade a
-  deriving (Show, Functor)
+data ReductionFailure
+  = AlreadyFullyReduced
+  | NeedsSubReduction ExpKey
+  | UnexpectedErrorReduce String ExpKey
+  deriving (Show)
 
-instance Applicative ReductionResult where
-  pure = ReductionMade
-  NoReductionsAvailable <*> (ReduceErrors es) = ReduceErrors es
-  (ReduceErrors es) <*> NoReductionsAvailable = ReduceErrors es
-  (ReduceErrors es) <*> (ReduceErrors es') = ReduceErrors $ es ++ es'
-  NoReductionsAvailable <*> _ = NoReductionsAvailable
-  _ <*> NoReductionsAvailable = NoReductionsAvailable
-  (ReductionMade f) <*> (ReductionMade x) = ReductionMade $ f x
+type ReductionSuccess = Exp
+type ReductionMonad = Either ReductionFailure
+type ReductionResult = ReductionMonad ReductionSuccess
 
-instance Monad ReductionResult where
-  (>>=) x f = join $ f <$> x
-    where
-      join (ReductionMade y) = y
-      join (ReduceErrors es) = ReduceErrors es
-      join NoReductionsAvailable = NoReductionsAvailable
-
-tryReduce :: Environment -> Exp -> ReductionResult Exp
+tryReduce :: Environment -> Exp -> ReductionResult
 tryReduce environment exp =
+  let fullyReduced = Left AlreadyFullyReduced
+      needsSubReduction expKey = Left $ NeedsReduction expKey
+      unexpectedErrorReduce msg expKey = Left $ UnexpectedErrorReduce msg expKey
+  in
   case exp of
-    LitE _ -> NoReductionsAvailable
+    LitE _ -> fullyReduced
     CondE (ConE conName) true false
-      | conName == 'True -> ReductionMade true
-      | conName == 'False -> ReductionMade false
-      | otherwise -> ReduceErrors ["Condition given non-boolean constructor"]
+      | conName == 'True -> Right true
+      | conName == 'False -> Right false
+      | otherwise -> unexpectedErrorReduce "If expression given non-boolean constructor" undefined
     CondE cond true false -> do
       undefined
 
