@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveLift #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -20,7 +21,10 @@ import "base" Data.Functor.Const
 import "base" Data.Functor.Product
 import "base" Data.Maybe (isNothing, catMaybes, fromJust)
 import "base" Data.Void
+import "base" Data.Data
 import "base" GHC.Generics
+
+import "uniplate" Data.Generics.Uniplate.Data
 
 import qualified "containers" Data.Map as M
 import           "containers" Data.Map (Map)
@@ -32,7 +36,7 @@ import "keys" Data.Key (Key(..), Keyed(..), keyed, Adjustable(..))
 import "pretty" Text.PrettyPrint.Annotated (renderSpans)
 
 import "template-haskell" Language.Haskell.TH
-import "template-haskell" Language.Haskell.TH.Syntax (Lift(..))
+import "template-haskell" Language.Haskell.TH.Syntax (Lift(..), Name(..), NameFlavour(..))
 
 import "recursion-schemes" Data.Functor.Foldable qualified as R
 
@@ -100,24 +104,8 @@ tryReduce environment exp =
 
 -- Extract bound names from a pattern, mainly useful for determining which
 -- pattern defines which variables in an environment
-patNames :: Pat -> [Name]
-patNames (LitP _) = []
-patNames (VarP name) = [name]
-patNames (TupP pats) = foldMap patNames pats
-patNames (UnboxedTupP _) = error "patNames: Unsupported pat UnboxedTupP"
-patNames (UnboxedSumP _ _ _) = error "patNames: Unsupported pat UnboxedSumP"
-patNames (ConP _ pats) = foldMap patNames pats
-patNames (InfixP patL _ patR) = foldMap patNames [patL, patR]
-patNames (UInfixP patL _ patR) = error "patNames: Unsupported pat UInfixP"
-patNames (ParensP pat) = patNames pat
-patNames (TildeP pat) = patNames pat -- TODO: How does laziness affect the use of patNames?
-patNames (BangP pat) = patNames pat
-patNames (AsP name pat) = name : patNames pat
-patNames (WildP) = []
-patNames (RecP _ fieldPats) = foldMap (patNames . snd) fieldPats
-patNames (ListP pats) = foldMap patNames pats
-patNames (SigP pat type_) = error "patNames: Unsupported pat SigP"
-patNames (ViewP exp pat) = error "patNames: Unsupported pat ViewP"
+patNames' :: Pat -> [Name]
+patNames' pat = [name | name@(Name _ flavour@(NameU _)) <- childrenBi pat]
 
 -- Matching between patterns and expressions can fail in three ways:
 -- - The pattern and the expression are known not to match
