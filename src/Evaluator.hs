@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveLift #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -212,12 +213,21 @@ flattenAppsF (AppEF func arg) = Just (func, [Just arg])
 flattenAppsF (InfixEF mlarg func mrarg) = Just (func, [mlarg, mrarg])
 flattenAppsF exp = Nothing
 
+flattenApps :: Exp -> (Exp, [Maybe Exp])
+flattenApps = flattenAppsG id
+
 flattenAppsKeyed :: Fix (RecKey Exp) -> (Fix (RecKey Exp), [Maybe (Fix (RecKey Exp))])
-flattenAppsKeyed self@(Fix (Pair _ expf)) =
-  case flattenAppsF expf of
+flattenAppsKeyed = flattenAppsG (\(Pair _ expf) -> expf)
+
+flattenAppsG
+  :: (R.Recursive t, R.Base t ~ f)
+  => (forall a. f a -> ExpF a)
+  -> t -> (t, [Maybe t])
+flattenAppsG extractExpression self =
+  case flattenAppsF (extractExpression $ R.project self) of
     Nothing -> (self, [])
     Just (function, postArgs) ->
-      let (innermostFunction, preArgs) = flattenAppsKeyed function
+      let (innermostFunction, preArgs) = flattenAppsG extractExpression function
       in
       (innermostFunction, subtituteOnto preArgs postArgs)
   where
