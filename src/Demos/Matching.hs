@@ -47,7 +47,7 @@ e2eMatchDemo mpat mexp = do
         , P.boldByANSI "pattern: " ++ P.pprintColoured (P.removeBaseQualifications $ P.attachAnn patKey (P.Annotation P.red Nothing) (P.noann pat))
         , P.boldByANSI "expression: ", P.pprintColoured (P.removeBaseQualifications $ P.attachAnn expKey (P.Annotation P.red Nothing) (P.noann exp))
         ]
-    Right bound ->
+    Right bound -> do
       runIO $ putStrLn $ unlines
         [ P.colorByANSI P.green "Following pattern and expression match."
         --, ""
@@ -57,6 +57,12 @@ e2eMatchDemo mpat mexp = do
         , P.boldByANSI "pattern: " ++ P.pprintColoured (P.removeBaseQualifications $ P.noann pat)
         , P.boldByANSI "expression: ", P.pprintColoured (P.removeBaseQualifications $ P.noann exp)
         ]
+      runIO $ flip mapM_ (zip [1..] bound) $ \(i, (pat, exp)) -> do
+        putStrLn $ P.boldByANSI $ "binding #" ++ show i ++ ": "
+        putStr "Pattern: "
+        putStrLn $ P.pprintColoured pat
+        putStr "Expression: "
+        putStrLn $ P.pprintColoured exp
   lift ()
 
 e2eMatchExample :: Q Exp
