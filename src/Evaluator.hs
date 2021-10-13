@@ -237,3 +237,42 @@ flattenAppsG extractExpression self =
     subtituteOnto (preArg:preRest) (postArg:postRest)
       | isNothing preArg = postArg : subtituteOnto preRest postRest
       | otherwise = preArg : subtituteOnto preRest (postArg:postRest)
+
+data IsList a
+  = IsCons a (IsList a)
+  | IsNil
+  | NotList a
+
+expToIsList :: Exp -> IsList Exp
+expToIsList exp
+  -- A cons constructor, applied to two expressions
+  | (ConE expConName, (Just headArg):(Just tailArg):_) <- flattenApps exp
+  , expConName == '(:)
+  = IsCons headArg (expToIsList tailArg)
+  -- A nil constructor
+  | ConE expConName <- exp
+  , expConName == '[]
+  = IsNil
+  -- A list expression
+  | (ListE exps) <- exp
+  = foldr IsCons IsNil exps
+  -- Otherwise, this isn't a list
+  | otherwise
+  = NotList exp
+
+patToIsList :: Pat -> IsList Pat
+patToIsList pat
+  -- A cons constructor, applied to two expressions
+  | ConP patConName [headArg, tailArg] <- pat
+  , patConName == '(:)
+  = IsCons headArg (patToIsList tailArg)
+  -- A nil constructor
+  | ConP expConName [] <- pat
+  , expConName == '[]
+  = IsNil
+  -- A list expression
+  | (ListP pats) <- pat
+  = foldr IsCons IsNil pats
+  -- Otherwise, this isn't a list
+  | otherwise
+  = NotList pat
