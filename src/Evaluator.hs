@@ -115,15 +115,6 @@ type MatchSuccess = [(Pat, Exp)]
 type MatchMonad a = Either MatchFailure a
 type MatchResult = MatchMonad MatchSuccess
 
--- TODO: Handle infix applications & type applications (URGENT!)
-flattenAppsKeyed :: Fix (RecKey Exp) -> (Fix (RecKey Exp), [Fix (RecKey Exp)])
-flattenAppsKeyed = fmap reverse . go
-  where
-    -- Build up argument list in reverse, to avoid O(n^2)
-    go :: Fix (RecKey Exp) -> (Fix (RecKey Exp), [Fix (RecKey Exp)])
-    go (Fix (Pair _ (AppEF func arg))) = (arg :) <$> go func
-    go exp = (exp, [])
-
 matchPatKeyed :: Pat -> Exp -> MatchResult
 matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
   where
@@ -157,7 +148,8 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
         match (UnboxedTupPF _) _ = error "matchPatKeyed: Unsupported UnboxedTupP pattern in AST"
         match (UnboxedSumPF _ _ _) _ = error "matchPatKeyed: Unsupported UnboxedSumP pattern in AST"
         match (ConPF patConName pats) _
-          | (func, args) <- flattenAppsKeyed annExp
+          | (func, margs) <- flattenAppsKeyed annExp
+          , let args = catMaybes margs
           , (ConE expConName) <- deann func
           = if expConName /= patConName
               then mismatch -- if constructors are different, assume that they belong to the same ADT & are mismatched
@@ -168,7 +160,20 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
                 LT -> unexpectedError "Data constructor in expression is applied to too many arguments."
                 GT -> unexpectedError "Data constructor in expression isn't fully applied."
                 EQ -> zipConcatM go pats args
-        match (InfixPF patL _ patR) _ = error "matchPatKeyed: Unsupported pat InfixP" -- TODO: Urgently need to support this for cons
+        match (InfixPF patL patConName patR) _
+          | let pats = [patL, patR]
+          , (func, margs) <- flattenAppsKeyed annExp
+          , let args = catMaybes margs
+          , (ConE expConName) <- deann func
+          = if expConName /= patConName
+              then mismatch -- if constructors are different, assume that they belong to the same ADT & are mismatched
+                            -- TODO: How does this interact with PatternSynonyms?
+                   -- if the pattern & expression constructors come from different ADTS, we'd return: `unexpectedError "Pattern and expression have different constructor names."`
+                   -- alas, we can't do this comparison here, for now
+              else case compare (length pats) (length args) of
+                LT -> unexpectedError "Data constructor in expression is applied to too many arguments."
+                GT -> unexpectedError "Data constructor in expression isn't fully applied."
+                EQ -> zipConcatM go pats args
         match (UInfixPF patL _ patR) _ = error "matchPatKeyed: Unsupported pat UInfixP"
         match (ParensPF pat) exp = go pat annExp
         match pat (ParensEF exp) = go annPat exp
@@ -191,8 +196,34 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
 
         match pat exp
           -- TODO: Definitely unfinished cases here somewhere...
-          | let (f, args) = flattenAppsKeyed annExp
+          | let (f, _) = flattenAppsKeyed annExp
           , (ConE _) <- deann f
           = mismatch
           | otherwise
           = needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
+
+data FlattenApps a = FlattenApps
+  { function :: a
+  , args :: [a]
+  }
+
+flattenAppsF :: ExpF a -> Maybe (a, [Maybe a])
+flattenAppsF (AppEF func arg) = Just (func, [Just arg])
+flattenAppsF (InfixEF mlarg func mrarg) = Just (func, [mlarg, mrarg])
+flattenAppsF exp = Nothing
+
+flattenAppsKeyed :: Fix (RecKey Exp) -> (Fix (RecKey Exp), [Maybe (Fix (RecKey Exp))])
+flattenAppsKeyed self@(Fix (Pair _ expf)) =
+  case flattenAppsF expf of
+    Nothing -> (self, [])
+    Just (function, postArgs) ->
+      let (innermostFunction, preArgs) = flattenAppsKeyed function
+      in
+      (innermostFunction, subtituteOnto preArgs postArgs)
+  where
+    subtituteOnto :: [Maybe a] -> [Maybe a] -> [Maybe a]
+    subtituteOnto [] postArgs = postArgs
+    subtituteOnto preArgs [] = preArgs
+    subtituteOnto (preArg:preRest) (postArg:postRest)
+      | isNothing preArg = postArg : subtituteOnto preRest postRest
+      | otherwise = preArg : subtituteOnto preRest (postArg:postRest)
