@@ -40,9 +40,12 @@ import "template-haskell" Language.Haskell.TH
 import "template-haskell" Language.Haskell.TH.Syntax (Lift(..), Name(..), NameFlavour(..))
 
 import "recursion-schemes" Data.Functor.Foldable qualified as R
+import "recursion-schemes" Data.Functor.Foldable.TH qualified as R
 
 import Lift
 import Ppr qualified as P
+
+import Debug.Trace
 
 -- Utils
 
@@ -120,7 +123,7 @@ matchPatKeyed :: Pat -> Exp -> MatchResult
 matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
   where
     go :: Fix (RecKey Pat) -> Fix (RecKey Exp) -> MatchResult
-    go annPat annExp = match patFAnn expFAnn
+    go annPat annExp = matchLists annPat annExp
       where
         (patKey, patFAnn) = toKeyPair annPat
         (expKey, expFAnn) = toKeyPair annExp
@@ -131,6 +134,34 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
 
         unexpectedError :: String -> MatchMonad a
         unexpectedError msg = Left $ UnexpectedErrorMatch msg (patKey, expKey)
+
+        matchLists :: Fix (RecKey Pat) -> Fix (RecKey Exp) -> MatchResult
+        matchLists pat exp =
+          let patList = patToIsListKeyed pat
+              expList = expToIsListKeyed exp
+          in
+          case (patList, expList) of
+            -- Matching conses
+            (IsCons head1 tail1, IsCons head2 tail2) ->
+              zipConcatM go [head1, tail1] [head2, tail2]
+            (IsCons head1 tail1, IsLiteral (head2:tail2)) ->
+              zipConcatM go [head1, tail1] [head2, fromKeyPair expKey $ ListEF tail2]
+            (IsLiteral (head1:tail1), IsCons head2 tail2) ->
+              zipConcatM go [head1, fromKeyPair patKey $ ListPF tail1] [head2, tail2]
+
+            -- Matching empty lists
+            (IsNil _, IsNil _) -> Right []
+            (IsNil _, IsLiteral []) -> Right []
+            (IsLiteral [], IsNil _) -> Right []
+
+            -- Mismatching conses to empty lists
+            (IsCons _ _, IsNil _) -> mismatch
+            (IsNil _, IsCons _ _) -> mismatch
+            (IsCons _ _, IsLiteral []) -> mismatch
+            (IsLiteral [], IsCons _ _) -> mismatch
+
+            -- Try matches by other means
+            _ -> match patFAnn expFAnn
 
         match :: PatF (Fix (RecKey Pat)) -> ExpF (Fix (RecKey Exp)) -> MatchResult
         match (LitPF pat) (LitEF exp)
@@ -200,6 +231,8 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
           | let (f, _) = flattenAppsKeyed annExp
           , (ConE _) <- deann f
           = mismatch
+          | (ConP _ _) <- deann annPat -- May be too aggressive...
+          = mismatch
           | otherwise
           = needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
 
@@ -239,65 +272,65 @@ flattenAppsG extractExpression self =
       | otherwise = preArg : subtituteOnto preRest (postArg:postRest)
 
 data IsList a
-  = IsCons a (IsList a)
-  | IsNil
-  | NotList a
+  = IsCons a a
+  | IsNil a
+  | IsLiteral [a]
+  | NotList
+  deriving (Show, Eq, Functor)
 
 isList :: IsList a -> Bool
-isList (NotList _) = False
+isList NotList = False
 isList _ = True
+
+expToIsList :: Exp -> IsList Exp
+expToIsList = expToIsListG id
+
+expToIsListKeyed :: Fix (RecKey Exp) -> IsList (Fix (RecKey Exp))
+expToIsListKeyed = expToIsListG (\(Pair _ expf) -> expf)
 
 expToIsListG
   :: (R.Recursive t, R.Base t ~ f)
   => (forall a. f a -> ExpF a)
   -> t -> IsList t
-expToIsListG extractExpression self
+expToIsListG extractExpression exp
   -- A cons constructor, applied to two expressions
-  | (func, Just headArg:Just tailArg:_) <- flattenAppsG extractExpression self
+  | (func, Just headArg:Just tailArg:_) <- flattenAppsG extractExpression exp
   , ConEF expConName <- extractExpression $ R.project func
   , expConName == '(:)
-  = IsCons headArg (expToIsListG extractExpression tailArg)
+  = IsCons headArg tailArg
   -- A nil constructor
-  | ConEF expConName <- extractExpression $ R.project self
+  | ConEF expConName <- extractExpression $ R.project exp
   , expConName == '[]
-  = IsNil
+  = IsNil exp
   -- A list expression
-  | (ListEF exps) <- extractExpression $ R.project self
-  = foldr IsCons IsNil exps
+  | (ListEF exps) <- extractExpression $ R.project exp
+  = IsLiteral exps
   -- Otherwise, this isn't a list
   | otherwise
-  = NotList self
-
-expToIsList :: Exp -> IsList Exp
-expToIsList exp
-  -- A cons constructor, applied to two expressions
-  | (ConE expConName, (Just headArg):(Just tailArg):_) <- flattenApps exp
-  , expConName == '(:)
-  = IsCons headArg (expToIsList tailArg)
-  -- A nil constructor
-  | ConE expConName <- exp
-  , expConName == '[]
-  = IsNil
-  -- A list expression
-  | (ListE exps) <- exp
-  = foldr IsCons IsNil exps
-  -- Otherwise, this isn't a list
-  | otherwise
-  = NotList exp
+  = NotList
 
 patToIsList :: Pat -> IsList Pat
-patToIsList pat
+patToIsList = patToIsListG id
+
+patToIsListKeyed :: Fix (RecKey Pat) -> IsList (Fix (RecKey Pat))
+patToIsListKeyed = patToIsListG (\(Pair _ patf) -> patf)
+
+patToIsListG
+  :: (R.Recursive t, R.Base t ~ f)
+  => (forall a. f a -> PatF a)
+  -> t -> IsList t
+patToIsListG extractPattern pat
   -- A cons constructor, applied to two expressions
-  | ConP patConName [headArg, tailArg] <- pat
+  | ConPF patConName [headArg, tailArg] <- extractPattern $ R.project pat
   , patConName == '(:)
-  = IsCons headArg (patToIsList tailArg)
+  = IsCons headArg tailArg
   -- A nil constructor
-  | ConP expConName [] <- pat
+  | ConPF expConName [] <- extractPattern $ R.project pat
   , expConName == '[]
-  = IsNil
+  = IsNil pat
   -- A list expression
-  | (ListP pats) <- pat
-  = foldr IsCons IsNil pats
+  | (ListPF pats) <- extractPattern $ R.project pat
+  = IsLiteral pats
   -- Otherwise, this isn't a list
   | otherwise
-  = NotList pat
+  = NotList

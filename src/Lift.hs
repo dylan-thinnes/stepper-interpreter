@@ -158,6 +158,9 @@ deannWrapped = R.embed . fmap deann
 toKeyPair :: Fix (Ann a f) -> (a, f (Fix (Ann a f)))
 toKeyPair (Fix (Pair (Const key) expf)) = (key, expf)
 
+fromKeyPair :: a -> f (Fix (Ann a f)) -> Fix (Ann a f)
+fromKeyPair key expf = (Fix (Pair (Const key) expf))
+
 toKeyPairDeann :: R.Corecursive t => Fix (RecKey t) -> ([Key (R.Base t)], t)
 toKeyPairDeann ann =
   let (key, expf) = toKeyPair ann
