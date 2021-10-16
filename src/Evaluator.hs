@@ -243,6 +243,31 @@ data IsList a
   | IsNil
   | NotList a
 
+isList :: IsList a -> Bool
+isList (NotList _) = False
+isList _ = True
+
+expToIsListG
+  :: (R.Recursive t, R.Base t ~ f)
+  => (forall a. f a -> ExpF a)
+  -> t -> IsList t
+expToIsListG extractExpression self
+  -- A cons constructor, applied to two expressions
+  | (func, Just headArg:Just tailArg:_) <- flattenAppsG extractExpression self
+  , ConEF expConName <- extractExpression $ R.project func
+  , expConName == '(:)
+  = IsCons headArg (expToIsListG extractExpression tailArg)
+  -- A nil constructor
+  | ConEF expConName <- extractExpression $ R.project self
+  , expConName == '[]
+  = IsNil
+  -- A list expression
+  | (ListEF exps) <- extractExpression $ R.project self
+  = foldr IsCons IsNil exps
+  -- Otherwise, this isn't a list
+  | otherwise
+  = NotList self
+
 expToIsList :: Exp -> IsList Exp
 expToIsList exp
   -- A cons constructor, applied to two expressions
