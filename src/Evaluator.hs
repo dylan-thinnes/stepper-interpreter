@@ -398,7 +398,7 @@ handle env exp = go (projectK exp)
           substitute body
         remainingDecls -> do
           emitLog "Reducing LetBody"
-          toSubExpression [bodyIdx]
+          toSubExpressionEnv (foldMap defines decls) [bodyIdx]
   go (CaseEF (targetIdx, target) branches) =
     handleBranch 0
     where
