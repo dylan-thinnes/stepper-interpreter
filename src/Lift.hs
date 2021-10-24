@@ -15,6 +15,7 @@ module Lift where
 import "base" Data.Bifunctor
 import "base" Data.Functor.Compose
 import "base" Data.Functor.Const
+import "base" Data.Functor.Identity
 import "base" Data.Functor.Product
 import "base" Foreign.ForeignPtr
 import "base" GHC.Generics (Generic1(..))
@@ -107,10 +108,16 @@ type PatKey = [Key PatF]
 type ExpKey = [Key ExpF]
 
 modPatByKey :: (Pat -> Pat) -> PatKey -> Pat -> Pat
-modPatByKey = adjustRecursive
+modPatByKey f key pat = runIdentity $ modPatByKeyA (Identity . f) key pat
 
 modExpByKey :: (Exp -> Exp) -> ExpKey -> Exp -> Exp
-modExpByKey = adjustRecursive
+modExpByKey f key exp = runIdentity $ modExpByKeyA (Identity . f) key exp
+
+modPatByKeyA :: Applicative m => (Pat -> m Pat) -> PatKey -> Pat -> m Pat
+modPatByKeyA = adjustRecursive
+
+modExpByKeyA :: Applicative m => (Exp -> m Exp) -> ExpKey -> Exp -> m Exp
+modExpByKeyA = adjustRecursive
 
 dekeyed :: Functor f => f (Key f, a) -> f a
 dekeyed = fmap snd
@@ -122,10 +129,20 @@ embedK :: (R.Corecursive t, Keyed (R.Base t)) => R.Base t (Key (R.Base t), t) ->
 embedK = R.embed . dekeyed
 
 adjustRecursive
-  :: (Adjustable (R.Base t), R.Corecursive t, R.Recursive t)
-  => (t -> t) -> [Key (R.Base t)] -> t -> t
+  :: (R.Base t ~ f, Adjustable f, Traversable f, R.Corecursive t, R.Recursive t, Applicative m)
+  => (t -> m t) -> [Key (R.Base t)] -> t -> m t
 adjustRecursive f [] t = f t
-adjustRecursive f (k:rest) t = R.embed $ adjust (adjustRecursive f rest) k $ R.project t
+adjustRecursive f (k:rest) t =
+  -- have to do these shenanigans because `adjust` can't change type inside container
+  let modifyWithWitness (_, a) = (adjustRecursive f rest a, a)
+      pureWithWitness a = (pure a, a)
+  in
+  fmap R.embed
+    $ sequenceA
+    $ fmap fst
+    $ adjust modifyWithWitness k
+    $ fmap pureWithWitness
+    $ R.project t
 
 adjustRecursiveG
   :: (R.Corecursive t, R.Recursive t)
