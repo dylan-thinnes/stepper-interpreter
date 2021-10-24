@@ -357,6 +357,10 @@ declLiveIn exp (FunD name _) = nameUsedIn exp name
 declLiveIn exp (ValD pat _ _) = any (nameUsedIn exp) (childrenBi pat)
 declLiveIn _ _ = error "declLiveIn: Unrecognized pattern"
 
+letWrap :: [Dec] -> Exp -> Exp
+letWrap [] e = e
+letWrap xs e = LetE xs e
+
 handle :: forall m. Monad m => Environment -> Exp -> m Exp
 handle env exp = go (projectK exp)
   where
@@ -386,7 +390,7 @@ handle env exp = go (projectK exp)
           explodedMatchingPats :: [Dec]
           explodedMatchingPats = concat $ either (:[]) (map explodeMatchingPat) <$> matchingPats
       emitLog "Exploding completed patterns in Let"
-      substitute (LetE explodedMatchingPats body)
+      substitute (letWrap explodedMatchingPats body)
     else
       case filter (declLiveIn body) decls of -- TODO: circular definitions, so we can remove one-at-a-time
         [] -> do
@@ -406,7 +410,7 @@ handle env exp = go (projectK exp)
             NormalB expBody = body -- TODO: handle guards
             patExpPairToValDecl (pat, exp) = ValD pat (NormalB exp) []
             explodeIntoLet boundVars =
-              LetE (map patExpPairToValDecl boundVars ++ decls) expBody
+              letWrap (map patExpPairToValDecl boundVars ++ decls) expBody
         in
         case matchPatKeyed pat target of
           Right boundVars -> do
@@ -447,7 +451,7 @@ handle env exp = go (projectK exp)
     , ValueDeclaration pat body wheres <- definition -- TODO: handle lookup for a function (probably means an error in flattenApps)
     , NormalB bodyExp <- body -- TODO: handle guards
     , VarP name <- pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
-    = substitute (LetE wheres bodyExp)
+    = substitute (letWrap wheres bodyExp)
     | (func, args) <- flattenAppsKeyed (annKeys exp)
     , VarE name <- deann func
     , definition <- maybe (error "function lookup failed") id $ lookupDefinition name env -- TODO: handle failed lookup
