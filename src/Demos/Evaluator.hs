@@ -25,7 +25,7 @@ x = $(lift =<< [|
 y :: IO ()
 y = mapM_ printExp steps
   where
-  steps = iterate (runIdentity . handle emptyEnvironment) x
+  steps = iterate (runIdentity . handle defaultEnvironment) x
   printExp x = do
     putStrLn "============"
     putStrLn (P.pprintColoured $ P.removeBaseQualifications x)
