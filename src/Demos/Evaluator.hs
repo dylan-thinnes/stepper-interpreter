@@ -1,5 +1,6 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Demos.Evaluator where
 
 import "base" Data.Functor.Identity
@@ -9,6 +10,7 @@ import "template-haskell" Language.Haskell.TH.Syntax
 
 import Evaluator
 import Lift
+import Ppr qualified as P
 
 x :: Exp
 x = $(lift =<< [|
@@ -20,5 +22,10 @@ x = $(lift =<< [|
     Just y -> y + 1
   |])
 
-y :: [Exp]
-y = iterate (runIdentity . handle emptyEnvironment) x
+y :: IO ()
+y = mapM_ printExp steps
+  where
+  steps = iterate (runIdentity . handle emptyEnvironment) x
+  printExp x = do
+    putStrLn "============"
+    putStrLn (P.pprintColoured $ P.removeBaseQualifications x)
