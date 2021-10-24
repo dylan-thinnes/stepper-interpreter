@@ -303,14 +303,34 @@ data Declarable
   = FunctionWithClauses [Clause] -- let f <1st clause>; f <2nd clause> ...
   | ValueDeclaration Pat Body [Dec] -- let <pat> = <body> where <...decs>
   | DataField Pat Exp -- field for a datatype, e.g. MyDatatype { myField :: Int }
+  | CustomFunction Int (CustomShow ([Exp] -> Either Int Exp)) -- "escape hatch" for functions w/ strict cardinality, like (+), can force reduction of nth argument
+                                                 -- TODO: Implement full MatchResult generality for CustomFunction
+  deriving (Show)
+
+data CustomShow a = CustomShow { msg :: String, unCustomShow :: a }
+instance Show (CustomShow a) where
+  show (CustomShow msg _) = msg
 
 type Environment = Map Name Declarable
 
-emptyEnvironment :: Environment
-emptyEnvironment = M.empty
+defaultEnvironment :: Environment
+defaultEnvironment = mkEnvironment [('(+), plus)]
+  where
+    plus = CustomFunction 2 (CustomShow "(+)" handler')
+      where
+        handler' [a, b] = handler a b
+        handler' _ = error "defaultEnvironment/plus/handler': wrong number of arguments given to (+), this shouldn't happen!"
+
+        handler (LitE (IntegerL a)) (LitE (IntegerL b)) = Right $ LitE $ IntegerL $ a + b
+        handler a@(LitE _) b@(LitE _) = error $ unwords ["Incompatible lits", show a, show b, "supplied"]
+        handler (LitE _) _ = Left 1
+        handler _ _ = Left 0
+
+mkEnvironment :: [(Name, Declarable)] -> Environment
+mkEnvironment = M.fromList
 
 defines :: Dec -> Environment
-defines = M.fromList . go
+defines = mkEnvironment . go
   where
   go (FunD name clauses) = [(name, FunctionWithClauses clauses)]
   go (ValD pat body wheres) = [(name, ValueDeclaration pat body wheres) | name <- patNames' pat]
@@ -421,11 +441,23 @@ handle env exp = go (projectK exp)
         Left (UnexpectedErrorMatch _ _) ->
           error "Unexpected error in matching process - this should not happen!"
   go _
-    | (VarE name, []) <- flattenApps exp
-    , definition <- maybe (error "todo: handle failed lookup") id $ lookupDefinition name env
+    | (func, []) <- flattenAppsKeyed (annKeys exp)
+    , VarE name <- deann func
+    , definition <- maybe (error "variable lookup failed") id $ lookupDefinition name env -- TODO: handle failed lookup
     , ValueDeclaration pat body wheres <- definition -- TODO: handle lookup for a function (probably means an error in flattenApps)
     , NormalB bodyExp <- body -- TODO: handle guards
     , VarP name <- pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
     = substitute (LetE wheres bodyExp)
-    | (VarE name, args) <- flattenApps exp
-    = error $ "Flattening gave arguments!!!"
+    | (func, args) <- flattenAppsKeyed (annKeys exp)
+    , VarE name <- deann func
+    , definition <- maybe (error "function lookup failed") id $ lookupDefinition name env -- TODO: handle failed lookup
+    = case definition of
+        CustomFunction cardinality handler
+          | any isNothing (take cardinality args) -> error "not fully applied!"
+          | otherwise ->
+            case unCustomShow handler (deann . fromJust <$> take cardinality args) of
+              Left argIdx ->
+                let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
+                in
+                toSubExpression path
+              Right result -> substitute result
