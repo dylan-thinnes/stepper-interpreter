@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveLift #-}
@@ -16,10 +17,11 @@
 module Evaluator where
 
 import "base" Control.Monad (zipWithM)
-import "base" Data.Foldable (fold)
+import "base" Data.Foldable (fold, toList)
 import "base" Data.Functor.Compose
 import "base" Data.Functor.Const
 import "base" Data.Functor.Product
+import "base" Data.Either (isRight)
 import "base" Data.Maybe (isNothing, catMaybes, fromJust)
 import "base" Data.Void
 import "base" Data.Data
@@ -304,8 +306,18 @@ data Declarable
 
 type Environment = Map Name Declarable
 
-defines :: ExpF Exp -> [(Name, Declarable)]
-defines _ = undefined
+emptyEnvironment :: Environment
+emptyEnvironment = M.empty
+
+defines :: Dec -> Environment
+defines = M.fromList . go
+  where
+  go (FunD name clauses) = [(name, FunctionWithClauses clauses)]
+  go (ValD pat body wheres) = [(name, ValueDeclaration pat body wheres) | name <- patNames' pat]
+  go _ = []
+
+lookupDefinition :: Name -> Environment -> Maybe Declarable
+lookupDefinition = M.lookup
 
 patExpToDec :: (Pat, Exp) -> Dec
 patExpToDec (pat, exp) = ValD pat (NormalB exp) []
@@ -313,66 +325,107 @@ patExpToDec (pat, exp) = ValD pat (NormalB exp) []
 redexOrderF :: Exp -> ExpKey
 redexOrderF (AppE func arg) = []
 
-emitLog = undefined
-deadDecls = undefined
-removeDeadDecls = undefined
-condIdx = undefined
-bodyIdx = undefined
-targetIdx = undefined
-lookupDefinition = undefined
-toSubExpression = undefined
-substitute = undefined
+emitLog msg = traceShow msg $ pure ()
 
-handle (LetE decls body) =
-  case deadDecls decls body of
-    [] -> do
-      emitLog "Reducing body"
-      toSubExpression [bodyIdx]
-    deadIndices -> do
-      emitLog "Removing dead variables"
-      substitute (LetE (removeDeadDecls deadIndices decls) body)
-handle (CaseE target branches) =
-  let handleBranch ii =
-        let Match pat body decls = branches !! ii
-            explodeIntoLet boundVars = undefined
+substitute :: Monad m => Exp -> m Exp
+substitute = return
+
+nameUsedIn :: Exp -> Name -> Bool
+nameUsedIn exp name = name `elem` childrenBi exp -- todo: does not even remotely cover all uses
+
+declLiveIn exp (FunD name _) = nameUsedIn exp name
+declLiveIn exp (ValD pat _ _) = any (nameUsedIn exp) (childrenBi pat)
+declLiveIn _ _ = error "declLiveIn: Unrecognized pattern"
+
+handle :: forall m. Monad m => Environment -> Exp -> m Exp
+handle env exp = go (projectK exp)
+  where
+  toSubExpression :: ExpKey -> m Exp
+  toSubExpression path = modExpByKeyA (handle env) path exp
+
+  toSubExpressionEnv :: Environment -> ExpKey -> m Exp
+  toSubExpressionEnv newEnv path = modExpByKeyA (handle (M.unionWith const newEnv env)) path exp
+
+  go :: ExpF (Key ExpF, Exp) -> m Exp
+  go (LetEF decls (bodyIdx, body)) =
+    let extractMatchingPat orig@(ValD pat (NormalB exp) _) -- TODO: handle guards
+          | VarP _ <- pat
+          = Left orig
+          | Right matches <- matchPatKeyed pat exp
+          = Right matches
+        extractMatchingPat orig = Left orig
+
+        matchingPats :: [Either Dec MatchSuccess]
+        matchingPats = map extractMatchingPat decls
+    in
+    if any isRight matchingPats
+    then do
+      let explodeMatchingPat :: (Pat, Exp) -> Dec
+          explodeMatchingPat (pat, exp) = ValD pat (NormalB exp) []
+
+          explodedMatchingPats :: [Dec]
+          explodedMatchingPats = concat $ either (:[]) (map explodeMatchingPat) <$> matchingPats
+      emitLog "Exploding completed patterns in Let"
+      substitute (LetE explodedMatchingPats body)
+    else
+      case filter (declLiveIn body) decls of -- TODO: circular definitions, so we can remove one-at-a-time
+        [] -> do
+          emitLog "Removing self"
+          substitute body
+        remainingDecls -> do
+          emitLog "Reducing LetBody"
+          toSubExpression [bodyIdx]
+  go (CaseEF (targetIdx, target) branches) =
+    handleBranch 0
+    where
+    handleBranch ii
+      | ii >= length branches
+      = substitute $(lift =<< [e| error "Inexhaustive pattern match." |])
+      | otherwise
+      = let Match pat body decls = branches !! ii
+            NormalB expBody = body -- TODO: handle guards
+            patExpPairToValDecl (pat, exp) = ValD pat (NormalB exp) []
+            explodeIntoLet boundVars =
+              LetE (map patExpPairToValDecl boundVars ++ decls) expBody
         in
         case matchPatKeyed pat target of
           Right boundVars -> do
-            emitLog "Successfully matched ii"
+            emitLog $ "Successfully matched branch " ++ show ii
             substitute $ explodeIntoLet boundVars
-          Left (Mismatch (patKey, expKey)) ->
+          Left (Mismatch (patKey, expKey)) -> do
             emitLog ("Patterns don't match: " ++ show patKey ++ ", " ++ show expKey)
             handleBranch (ii + 1)
-          Left (NeedsReduction (patKey, expKey)) ->
+          Left (NeedsReduction (patKey, expKey)) -> do
             emitLog "Case expression needs further reduction"
             toSubExpression (targetIdx : expKey)
           Left (UnexpectedErrorMatch _ _) ->
             error "Unexpected error in matching process - this should not happen!"
-  in
-  handleBranch 0
-handle (CondE cond true false) =
-  let tryMatchBool b =
-        let conName = if b then 'True else 'False
-            result = if b then true else false
-        in
-        case matchPatKeyed (ConP conName []) cond of
-          Right boundVars -> do
-            emitLog $ "CondE expression's condition is " ++ show b
-            substitute result
-          Left (Mismatch (patKey, expKey)) ->
-            if b
-              then tryMatchBool False
-              else error "CondE has mismatch with both False and True!"
-          Left (NeedsReduction (patKey, expKey)) ->
-            emitLog "Case expression needs further reduction"
-            toSubExpression (condIdx : expKey)
-          Left (UnexpectedErrorMatch _ _) ->
-            error "Unexpected error in matching process - this should not happen!"
-  in
-  tryMatchBool True
-handle exp
-  | (func, []) <- flattenApps exp
-  = undefined
-  | (func, args) <- flattenApps exp
-  , funcDef <- lookupDefinition func
-  = undefined
+  go (CondEF (condIdx, cond) (_, true) (_, false)) =
+    tryMatchBool True
+    where
+    tryMatchBool b =
+      let conName = if b then 'True else 'False
+          result = if b then true else false
+      in
+      case matchPatKeyed (ConP conName []) cond of
+        Right boundVars -> do
+          emitLog $ "CondE expression's condition is " ++ show b
+          substitute result
+        Left (Mismatch (patKey, expKey)) ->
+          if b
+            then tryMatchBool False
+            else error "CondE has mismatch with both False and True!"
+        Left (NeedsReduction (patKey, expKey)) -> do
+          emitLog "Case expression needs further reduction"
+          toSubExpression (condIdx : expKey)
+        Left (UnexpectedErrorMatch _ _) ->
+          error "Unexpected error in matching process - this should not happen!"
+  go _
+    | (VarE name, []) <- flattenApps exp
+    , definition <- maybe (error "todo: handle failed lookup") id $ lookupDefinition name env
+    , ValueDeclaration pat body wheres <- definition -- TODO: handle lookup for a function (probably means an error in flattenApps)
+    , NormalB bodyExp <- body -- TODO: handle guards
+    , VarP name <- pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
+    = substitute (LetE wheres bodyExp)
+    | (VarE name, args) <- flattenApps exp
+    = error $ "Flattening gave arguments!!!"
