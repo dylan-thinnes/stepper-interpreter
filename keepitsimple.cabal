@@ -29,7 +29,8 @@ library
         Ppr,
         Ppr.Lib,
         Ppr.THLibMapCopy,
-        Demos.Matching
+        Demos.Matching,
+        Demos.Evaluator
 
     -- Modules included in this library but not exported.
     -- other-modules:
