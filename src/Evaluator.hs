@@ -52,50 +52,6 @@ import Debug.Trace
 zipConcatM :: Monad m => (a -> b -> m [c]) -> [a] -> [b] -> m [c]
 zipConcatM f as bs = concat <$> zipWithM f as bs
 
--- Evaluation
-
-data Evaluable
-  = EvalFunctionClauses [Clause] -- Dec.FunD
-  | EvalValueDeclaration Pat Body [Dec] -- Dec.ValD
-  | EvalExpression Exp -- Exp
-
-type Environment = Map Name Evaluable
-
-definitions :: Exp -> [(Name, Evaluable)]
-definitions (LetE decs exp) = do
-  dec <- decs
-  case dec of
-    FunD name clauses -> pure (name, EvalFunctionClauses clauses)
-    ValD pat body decs -> do
-      _ <- undefined
-      []
-    _ -> []
-
-data ReductionFailure
-  = AlreadyFullyReduced
-  | NeedsSubReduction ExpKey
-  | UnexpectedErrorReduce String ExpKey
-  deriving (Show)
-
-type ReductionSuccess = Exp
-type ReductionMonad = Either ReductionFailure
-type ReductionResult = ReductionMonad ReductionSuccess
-
-tryReduce :: Environment -> Exp -> ReductionResult
-tryReduce environment exp =
-  let fullyReduced = Left AlreadyFullyReduced
-      needsSubReduction expKey = Left $ NeedsReduction expKey
-      unexpectedErrorReduce msg expKey = Left $ UnexpectedErrorReduce msg expKey
-  in
-  case exp of
-    LitE _ -> fullyReduced
-    CondE (ConE conName) true false
-      | conName == 'True -> Right true
-      | conName == 'False -> Right false
-      | otherwise -> unexpectedErrorReduce "If expression given non-boolean constructor" undefined
-    CondE cond true false -> do
-      undefined
-
 -- ============================ PATTERN MATCHING
 
 -- Extract bound names from a pattern, mainly useful for determining which
@@ -236,6 +192,8 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
           | otherwise
           = needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
 
+-- ================== FUNCTION APPLICATION IN EXPRESSIONS
+
 data FlattenApps a = FlattenApps
   { function :: a
   , args :: [a]
@@ -270,6 +228,8 @@ flattenAppsG extractExpression self =
     subtituteOnto (preArg:preRest) (postArg:postRest)
       | isNothing preArg = postArg : subtituteOnto preRest postRest
       | otherwise = preArg : subtituteOnto preRest (postArg:postRest)
+
+-- ================= Lists Made From Literals, Cons, and []
 
 data IsList a
   = IsCons a a
@@ -334,3 +294,85 @@ patToIsListG extractPattern pat
   -- Otherwise, this isn't a list
   | otherwise
   = NotList
+
+-- =============================== Evaluation
+
+data Declarable
+  = FunctionWithClauses [Clause] -- let f <1st clause>; f <2nd clause> ...
+  | ValueDeclaration Pat Body [Dec] -- let <pat> = <body> where <...decs>
+  | DataField Pat Exp -- field for a datatype, e.g. MyDatatype { myField :: Int }
+
+type Environment = Map Name Declarable
+
+defines :: ExpF Exp -> [(Name, Declarable)]
+defines _ = undefined
+
+patExpToDec :: (Pat, Exp) -> Dec
+patExpToDec (pat, exp) = ValD pat (NormalB exp) []
+
+redexOrderF :: Exp -> ExpKey
+redexOrderF (AppE func arg) = []
+
+emitLog = undefined
+deadDecls = undefined
+removeDeadDecls = undefined
+condIdx = undefined
+bodyIdx = undefined
+targetIdx = undefined
+lookupDefinition = undefined
+toSubExpression = undefined
+substitute = undefined
+
+handle (LetE decls body) =
+  case deadDecls decls body of
+    [] -> do
+      emitLog "Reducing body"
+      toSubExpression [bodyIdx]
+    deadIndices -> do
+      emitLog "Removing dead variables"
+      substitute (LetE (removeDeadDecls deadIndices decls) body)
+handle (CaseE target branches) =
+  let handleBranch ii =
+        let Match pat body decls = branches !! ii
+            explodeIntoLet boundVars = undefined
+        in
+        case matchPatKeyed pat target of
+          Right boundVars -> do
+            emitLog "Successfully matched ii"
+            substitute $ explodeIntoLet boundVars
+          Left (Mismatch (patKey, expKey)) ->
+            emitLog ("Patterns don't match: " ++ show patKey ++ ", " ++ show expKey)
+            handleBranch (ii + 1)
+          Left (NeedsReduction (patKey, expKey)) ->
+            emitLog "Case expression needs further reduction"
+            toSubExpression (targetIdx : expKey)
+          Left (UnexpectedErrorMatch _ _) ->
+            error "Unexpected error in matching process - this should not happen!"
+  in
+  handleBranch 0
+handle (CondE cond true false) =
+  let tryMatchBool b =
+        let conName = if b then 'True else 'False
+            result = if b then true else false
+        in
+        case matchPatKeyed (ConP conName []) cond of
+          Right boundVars -> do
+            emitLog $ "CondE expression's condition is " ++ show b
+            substitute result
+          Left (Mismatch (patKey, expKey)) ->
+            if b
+              then tryMatchBool False
+              else error "CondE has mismatch with both False and True!"
+          Left (NeedsReduction (patKey, expKey)) ->
+            emitLog "Case expression needs further reduction"
+            toSubExpression (condIdx : expKey)
+          Left (UnexpectedErrorMatch _ _) ->
+            error "Unexpected error in matching process - this should not happen!"
+  in
+  tryMatchBool True
+handle exp
+  | (func, []) <- flattenApps exp
+  = undefined
+  | (func, args) <- flattenApps exp
+  , funcDef <- lookupDefinition func
+  = undefined
