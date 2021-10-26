@@ -200,12 +200,13 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
 data FlattenedApps a = FlattenedApps
   { func :: a
   , args :: [Maybe a]
+  , intermediateFuncs :: [(Int, a)]
   }
 
-flattenAppsF :: ExpF a -> Maybe (FlattenedApps a)
-flattenAppsF (AppEF func arg) = Just $ FlattenedApps func [Just arg]
-flattenAppsF (InfixEF mlarg func mrarg) = Just $ FlattenedApps func [mlarg, mrarg]
-flattenAppsF exp = Nothing
+flattenAppsF :: (a, ExpF a) -> Maybe (FlattenedApps a)
+flattenAppsF (orig, AppEF func arg) = Just $ FlattenedApps func [Just arg] [(1, orig)]
+flattenAppsF (orig, InfixEF mlarg func mrarg) = Just $ FlattenedApps func [mlarg, mrarg] [(2, orig)]
+flattenAppsF _ = Nothing
 
 flattenApps :: Exp -> FlattenedApps Exp
 flattenApps = flattenAppsG id
@@ -218,12 +219,13 @@ flattenAppsG
   => (forall a. f a -> ExpF a)
   -> t -> FlattenedApps t
 flattenAppsG extractExpression self =
-  case flattenAppsF (extractExpression $ R.project self) of
-    Nothing -> FlattenedApps self []
-    Just (FlattenedApps { func, args = postArgs }) ->
-      let FlattenedApps innermostFunction preArgs = flattenAppsG extractExpression func
+  case flattenAppsF (self, extractExpression $ R.project self) of
+    Nothing -> FlattenedApps self [] []
+    Just (FlattenedApps { func, args = postArgs, intermediateFuncs = postIntermediateFuncs }) ->
+      let FlattenedApps { func = innermostFunction, args = preArgs, intermediateFuncs = preIntermediateFuncs } =
+            flattenAppsG extractExpression func
       in
-      FlattenedApps innermostFunction (subtituteOnto preArgs postArgs)
+      FlattenedApps innermostFunction (subtituteOnto preArgs postArgs) (preIntermediateFuncs ++ postIntermediateFuncs)
   where
     subtituteOnto :: [Maybe a] -> [Maybe a] -> [Maybe a]
     subtituteOnto [] postArgs = postArgs
