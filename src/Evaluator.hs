@@ -329,7 +329,7 @@ instance Show (CustomShow a) where
 type Environment = Map Name Declarable
 
 defaultEnvironment :: Environment
-defaultEnvironment = mkEnvironment [('(+), plus)]
+defaultEnvironment = mkEnvironment [('(+), plus), ('(*), times)]
   where
     plus = FunctionDeclaration $ CustomFD 2 (CustomShow "(+)" handler')
       where
@@ -337,6 +337,16 @@ defaultEnvironment = mkEnvironment [('(+), plus)]
         handler' _ = error "defaultEnvironment/plus/handler': wrong number of arguments given to (+), this shouldn't happen!"
 
         handler (LitE (IntegerL a)) (LitE (IntegerL b)) = Right $ LitE $ IntegerL $ a + b
+        handler a@(LitE _) b@(LitE _) = error $ unwords ["Incompatible lits", show a, show b, "supplied"]
+        handler (LitE _) _ = Left (1, NeedsReduction ([], []))
+        handler _ _ = Left (0, NeedsReduction ([], []))
+
+    times = FunctionDeclaration $ CustomFD 2 (CustomShow "(*)" handler')
+      where
+        handler' [a, b] = handler a b
+        handler' _ = error "defaultEnvironment/plus/handler': wrong number of arguments given to (+), this shouldn't happen!"
+
+        handler (LitE (IntegerL a)) (LitE (IntegerL b)) = Right $ LitE $ IntegerL $ a * b
         handler a@(LitE _) b@(LitE _) = error $ unwords ["Incompatible lits", show a, show b, "supplied"]
         handler (LitE _) _ = Left (1, NeedsReduction ([], []))
         handler _ _ = Left (0, NeedsReduction ([], []))
