@@ -48,6 +48,7 @@ library
         lens,
         keys,
         pretty,
+        process,
         recursion-schemes,
         template-haskell,
         uniplate

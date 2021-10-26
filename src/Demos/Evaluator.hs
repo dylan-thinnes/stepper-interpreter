@@ -5,6 +5,8 @@ module Demos.Evaluator where
 
 import "base" Data.Functor.Identity
 
+import "process" System.Process
+
 import "template-haskell" Language.Haskell.TH
 import "template-haskell" Language.Haskell.TH.Syntax
 
@@ -28,4 +30,5 @@ y = mapM_ printExp steps
   steps = iterate (runIdentity . handle defaultEnvironment) x
   printExp x = do
     putStrLn "============"
-    putStrLn (P.pprintColoured $ P.removeBaseQualifications x)
+    highlighted <- readProcess "/usr/bin/batcat" (words "-l haskell -pp --color always -") (P.pprint $ P.removeBaseQualifications x)
+    putStr highlighted
