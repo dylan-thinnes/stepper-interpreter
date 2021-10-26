@@ -447,7 +447,8 @@ handle env exp = go (projectK exp)
             emitLog $ "Successfully matched branch " ++ show ii
             substitute $ explodeIntoLet boundVars
           Left (Mismatch (patKey, expKey)) -> do
-            emitLog ("Patterns don't match: " ++ show patKey ++ ", " ++ show expKey)
+            emitLog ("Patterns don't match: " ++ show pat ++ ", " ++ show target)
+            emitLog ("Keys: " ++ show patKey ++ ", " ++ show expKey)
             handleBranch (ii + 1)
           Left (NeedsReduction (patKey, expKey)) -> do
             emitLog "Case expression needs further reduction"
