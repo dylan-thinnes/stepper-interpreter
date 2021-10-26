@@ -203,6 +203,12 @@ data FlattenedApps a = FlattenedApps
   , intermediateFuncs :: [(Int, a)]
   }
 
+getIntermediateFunc :: Int -> [(Int, a)] -> (Int, Int, a)
+getIntermediateFunc n [] = error "getIntermediateFunc: ran out of functions"
+getIntermediateFunc n ((size, f):rest)
+  | n <= size = (n, size, f)
+  | otherwise = getIntermediateFunc (n - size) rest
+
 flattenAppsF :: (a, ExpF a) -> Maybe (FlattenedApps a)
 flattenAppsF (orig, AppEF func arg) = Just $ FlattenedApps func [Just arg] [(1, orig)]
 flattenAppsF (orig, InfixEF mlarg func mrarg) = Just $ FlattenedApps func [mlarg, mrarg] [(2, orig)]
@@ -460,7 +466,7 @@ handle env exp = go (projectK exp)
     , NormalB bodyExp <- body -- TODO: handle guards
     , VarP name <- pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
     = substitute (letWrap wheres bodyExp)
-    | FlattenedApps { func, args } <- flattenAppsKeyed (annKeys exp)
+    | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys exp)
     , VarE name <- deann func
     , FunctionDeclaration definition <- maybe (error "function lookup failed") id $ lookupDefinition name env
       -- TODO: handle failed lookup
@@ -476,6 +482,7 @@ handle env exp = go (projectK exp)
               ClausesFD clauses -> map clauseToHandler clauses
           headArgs = take cardinality args
           remainingArgs = take cardinality args
+          (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
           runHandler ii =
             if length handlers <= ii
               then substitute $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add function name to error
@@ -490,7 +497,7 @@ handle env exp = go (projectK exp)
                   Left (argIdx, Mismatch _) ->
                     runHandler (ii + 1)
                   -- TODO: Handle other kinds of failure
-                  Right result -> substitute result
+                  Right result -> substitute (modExpByKey (const result) targetFunctionPath exp)
       in
       if any isNothing headArgs
         then error "not fully applied!" -- TODO: Handle partial application
