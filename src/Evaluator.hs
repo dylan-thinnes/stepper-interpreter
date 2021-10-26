@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DeriveDataTypeable #-}
@@ -138,7 +139,7 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
         match (UnboxedTupPF _) _ = error "matchPatKeyed: Unsupported UnboxedTupP pattern in AST"
         match (UnboxedSumPF _ _ _) _ = error "matchPatKeyed: Unsupported UnboxedSumP pattern in AST"
         match (ConPF patConName pats) _
-          | (func, margs) <- flattenAppsKeyed annExp
+          | FlattenedApps { func, args = margs } <- flattenAppsKeyed annExp
           , let args = catMaybes margs
           , (ConE expConName) <- deann func
           = if expConName /= patConName
@@ -152,7 +153,7 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
                 EQ -> zipConcatM go pats args
         match (InfixPF patL patConName patR) _
           | let pats = [patL, patR]
-          , (func, margs) <- flattenAppsKeyed annExp
+          , FlattenedApps { func, args = margs } <- flattenAppsKeyed annExp
           , let args = catMaybes margs
           , (ConE expConName) <- deann func
           = if expConName /= patConName
@@ -186,8 +187,8 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
 
         match pat exp
           -- TODO: Definitely unfinished cases here somewhere...
-          | let (f, _) = flattenAppsKeyed annExp
-          , (ConE _) <- deann f
+          | FlattenedApps { func } <- flattenAppsKeyed annExp
+          , (ConE _) <- deann func
           = mismatch
           | (ConP _ _) <- deann annPat -- May be too aggressive...
           = mismatch
@@ -196,33 +197,33 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
 
 -- ================== FUNCTION APPLICATION IN EXPRESSIONS
 
-data FlattenApps a = FlattenApps
-  { function :: a
-  , args :: [a]
+data FlattenedApps a = FlattenedApps
+  { func :: a
+  , args :: [Maybe a]
   }
 
-flattenAppsF :: ExpF a -> Maybe (a, [Maybe a])
-flattenAppsF (AppEF func arg) = Just (func, [Just arg])
-flattenAppsF (InfixEF mlarg func mrarg) = Just (func, [mlarg, mrarg])
+flattenAppsF :: ExpF a -> Maybe (FlattenedApps a)
+flattenAppsF (AppEF func arg) = Just $ FlattenedApps func [Just arg]
+flattenAppsF (InfixEF mlarg func mrarg) = Just $ FlattenedApps func [mlarg, mrarg]
 flattenAppsF exp = Nothing
 
-flattenApps :: Exp -> (Exp, [Maybe Exp])
+flattenApps :: Exp -> FlattenedApps Exp
 flattenApps = flattenAppsG id
 
-flattenAppsKeyed :: Fix (RecKey Exp) -> (Fix (RecKey Exp), [Maybe (Fix (RecKey Exp))])
+flattenAppsKeyed :: Fix (RecKey Exp) -> FlattenedApps (Fix (RecKey Exp))
 flattenAppsKeyed = flattenAppsG (\(Pair _ expf) -> expf)
 
 flattenAppsG
   :: (R.Recursive t, R.Base t ~ f)
   => (forall a. f a -> ExpF a)
-  -> t -> (t, [Maybe t])
+  -> t -> FlattenedApps t
 flattenAppsG extractExpression self =
   case flattenAppsF (extractExpression $ R.project self) of
-    Nothing -> (self, [])
-    Just (function, postArgs) ->
-      let (innermostFunction, preArgs) = flattenAppsG extractExpression function
+    Nothing -> FlattenedApps self []
+    Just (FlattenedApps { func, args = postArgs }) ->
+      let FlattenedApps innermostFunction preArgs = flattenAppsG extractExpression func
       in
-      (innermostFunction, subtituteOnto preArgs postArgs)
+      FlattenedApps innermostFunction (subtituteOnto preArgs postArgs)
   where
     subtituteOnto :: [Maybe a] -> [Maybe a] -> [Maybe a]
     subtituteOnto [] postArgs = postArgs
@@ -256,7 +257,7 @@ expToIsListG
   -> t -> IsList t
 expToIsListG extractExpression exp
   -- A cons constructor, applied to two expressions
-  | (func, Just headArg:Just tailArg:_) <- flattenAppsG extractExpression exp
+  | FlattenedApps { func, args = Just headArg:Just tailArg:_ } <- flattenAppsG extractExpression exp
   , ConEF expConName <- extractExpression $ R.project func
   , expConName == '(:)
   = IsCons headArg tailArg
@@ -450,14 +451,14 @@ handle env exp = go (projectK exp)
         Left (UnexpectedErrorMatch _ _) ->
           error "Unexpected error in matching process - this should not happen!"
   go _
-    | (func, []) <- flattenAppsKeyed (annKeys exp)
+    | FlattenedApps { func, args = [] } <- flattenAppsKeyed (annKeys exp)
     , VarE name <- deann func
     , definition <- maybe (error "variable lookup failed") id $ lookupDefinition name env -- TODO: handle failed lookup
     , ValueDeclaration pat body wheres <- definition -- TODO: handle lookup for a function (probably means an error in flattenApps)
     , NormalB bodyExp <- body -- TODO: handle guards
     , VarP name <- pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
     = substitute (letWrap wheres bodyExp)
-    | (func, args) <- flattenAppsKeyed (annKeys exp)
+    | FlattenedApps { func, args } <- flattenAppsKeyed (annKeys exp)
     , VarE name <- deann func
     , FunctionDeclaration definition <- maybe (error "function lookup failed") id $ lookupDefinition name env
       -- TODO: handle failed lookup
