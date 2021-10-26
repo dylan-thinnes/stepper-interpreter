@@ -192,7 +192,7 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
           , (ConE _) <- deann func
           = mismatch
           | (ConP _ _) <- deann annPat -- May be too aggressive...
-          = mismatch
+          = needsReduction
           | otherwise
           = needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
 
