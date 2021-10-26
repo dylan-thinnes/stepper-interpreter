@@ -24,10 +24,20 @@ x = $(lift =<< [|
     Just y -> y + 1
   |])
 
-y :: IO ()
-y = mapM_ printExp steps
+y :: Exp
+y = $(lift =<< [|
+  let t z = Just (10 + z)
+      k = 3
+  in
+  case t k of
+    Nothing -> 0
+    Just y -> y * 2
+  |])
+
+run :: Exp -> IO ()
+run exp = mapM_ printExp steps
   where
-  steps = iterate (runIdentity . handle defaultEnvironment) x
+  steps = iterate (runIdentity . handle defaultEnvironment) exp
   printExp x = do
     putStrLn "============"
     highlighted <- readProcess "/usr/bin/batcat" (words "-l haskell -pp --color always -") (P.pprint $ P.removeBaseQualifications x)
