@@ -22,6 +22,7 @@ import "base" Data.Foldable (fold, toList)
 import "base" Data.Functor.Compose
 import "base" Data.Functor.Const
 import "base" Data.Functor.Product
+import "base" Data.Functor.Identity
 import "base" Data.Either (isRight)
 import "base" Data.Maybe (isNothing, catMaybes, fromJust)
 import "base" Data.Void
@@ -359,7 +360,8 @@ patExpToDec (pat, exp) = ValD pat (NormalB exp) []
 redexOrderF :: Exp -> ExpKey
 redexOrderF (AppE func arg) = []
 
-emitLog msg = traceShow msg $ pure ()
+emitLog :: Loggable m => String -> m ()
+emitLog = instantLog
 
 substitute :: Monad m => Exp -> m Exp
 substitute = return
@@ -375,7 +377,7 @@ letWrap :: [Dec] -> Exp -> Exp
 letWrap [] e = e
 letWrap xs e = LetE xs e
 
-handle :: forall m. Monad m => Environment -> Exp -> m Exp
+handle :: forall m. (Monad m, Loggable m) => Environment -> Exp -> m Exp
 handle env exp = go (projectK exp)
   where
   toSubExpression :: ExpKey -> m Exp
@@ -502,3 +504,26 @@ handle env exp = go (projectK exp)
       if any isNothing headArgs
         then error "not fully applied!" -- TODO: Handle partial application
         else runHandler 0
+
+data InstantLog a = InstantLog (Maybe String) a
+  deriving (Show, Eq, Ord, Functor)
+
+instance Applicative InstantLog where
+  pure = InstantLog Nothing
+  (<*>) (InstantLog fMsg f) a = InstantLog fMsg (f $ runInstantLog a)
+
+instance Monad InstantLog where
+  (>>=) a f = f (runInstantLog a)
+  (>>) (InstantLog aMsg a) b = traceShow aMsg b
+
+runInstantLog (InstantLog Nothing a) = a
+runInstantLog (InstantLog (Just msg) a) = traceShow msg a
+
+class Loggable m where
+  instantLog :: String -> m ()
+
+instance Loggable Identity where
+  instantLog msg = traceShow msg $ pure ()
+
+instance Loggable InstantLog where
+  instantLog msg = InstantLog (Just msg) ()
