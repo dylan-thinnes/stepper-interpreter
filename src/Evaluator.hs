@@ -196,6 +196,9 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
           | otherwise
           = needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
 
+patExpPairToValDecl :: (Pat, Exp) -> Dec
+patExpPairToValDecl (pat, exp) = ValD pat (NormalB exp) []
+
 -- ================== FUNCTION APPLICATION IN EXPRESSIONS
 
 data FlattenedApps a = FlattenedApps
@@ -434,7 +437,6 @@ handle env exp = go (projectK exp)
       | otherwise
       = let Match pat body decls = branches !! ii
             NormalB expBody = body -- TODO: handle guards
-            patExpPairToValDecl (pat, exp) = ValD pat (NormalB exp) []
             explodeIntoLet boundVars =
               letWrap (map patExpPairToValDecl boundVars ++ decls) expBody
         in
