@@ -300,11 +300,16 @@ patToIsListG extractPattern pat
 -- =============================== Evaluation
 
 data Declarable
-  = FunctionWithClauses [Clause] -- let f <1st clause>; f <2nd clause> ...
+  = FunctionDeclaration FunctionDeclaration -- let f <1st clause>; f <2nd clause> ...
   | ValueDeclaration Pat Body [Dec] -- let <pat> = <body> where <...decs>
   | DataField Pat Exp -- field for a datatype, e.g. MyDatatype { myField :: Int }
-  | CustomFunction Int (CustomShow ([Exp] -> Either Int Exp)) -- "escape hatch" for functions w/ strict cardinality, like (+), can force reduction of nth argument
-                                                 -- TODO: Implement full MatchResult generality for CustomFunction
+  deriving (Show)
+
+data FunctionDeclaration
+  = ClausesFD [Clause]
+  | CustomFD Int (CustomShow ([Exp] -> Either (Int, MatchFailure) Exp))
+    -- "escape hatch" for functions w/ strict cardinality, like (+), can force reduction of nth argument
+    -- TODO: Implement full MatchResult generality for CustomFD
   deriving (Show)
 
 data CustomShow a = CustomShow { msg :: String, unCustomShow :: a }
@@ -316,15 +321,15 @@ type Environment = Map Name Declarable
 defaultEnvironment :: Environment
 defaultEnvironment = mkEnvironment [('(+), plus)]
   where
-    plus = CustomFunction 2 (CustomShow "(+)" handler')
+    plus = FunctionDeclaration $ CustomFD 2 (CustomShow "(+)" handler')
       where
         handler' [a, b] = handler a b
         handler' _ = error "defaultEnvironment/plus/handler': wrong number of arguments given to (+), this shouldn't happen!"
 
         handler (LitE (IntegerL a)) (LitE (IntegerL b)) = Right $ LitE $ IntegerL $ a + b
         handler a@(LitE _) b@(LitE _) = error $ unwords ["Incompatible lits", show a, show b, "supplied"]
-        handler (LitE _) _ = Left 1
-        handler _ _ = Left 0
+        handler (LitE _) _ = Left (1, NeedsReduction ([], []))
+        handler _ _ = Left (0, NeedsReduction ([], []))
 
 mkEnvironment :: [(Name, Declarable)] -> Environment
 mkEnvironment = M.fromList
@@ -332,7 +337,7 @@ mkEnvironment = M.fromList
 defines :: Dec -> Environment
 defines = mkEnvironment . go
   where
-  go (FunD name clauses) = [(name, FunctionWithClauses clauses)]
+  go (FunD name clauses) = [(name, FunctionDeclaration $ ClausesFD clauses)]
   go (ValD pat body wheres) = [(name, ValueDeclaration pat body wheres) | name <- patNames' pat]
   go _ = []
 
@@ -454,14 +459,36 @@ handle env exp = go (projectK exp)
     = substitute (letWrap wheres bodyExp)
     | (func, args) <- flattenAppsKeyed (annKeys exp)
     , VarE name <- deann func
-    , definition <- maybe (error "function lookup failed") id $ lookupDefinition name env -- TODO: handle failed lookup
-    = case definition of
-        CustomFunction cardinality handler
-          | any isNothing (take cardinality args) -> error "not fully applied!"
-          | otherwise ->
-            case unCustomShow handler (deann . fromJust <$> take cardinality args) of
-              Left argIdx ->
-                let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
+    , FunctionDeclaration definition <- maybe (error "function lookup failed") id $ lookupDefinition name env
+      -- TODO: handle failed lookup
+      -- TODO: when looked-up var is not a function
+    = let cardinality =
+            case definition of
+              CustomFD cardinality _ -> cardinality
+              ClausesFD (Clause pats _ _:_) -> length pats -- function definitions should have at least one clause
+          clauseToHandler = undefined
+          handlers =
+            case definition of
+              CustomFD _ handler -> [unCustomShow handler]
+              ClausesFD clauses -> map clauseToHandler clauses
+          headArgs = take cardinality args
+          remainingArgs = take cardinality args
+          runHandler ii =
+            if length handlers <= ii
+              then substitute $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add function name to error
+              else
+                let handler = handlers !! ii
                 in
-                toSubExpression path
-              Right result -> substitute result
+                case handler (deann . fromJust <$> headArgs) of
+                  Left (argIdx, NeedsReduction (_, argSubPath)) ->
+                    let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
+                    in
+                    toSubExpression (path ++ argSubPath)
+                  Left (argIdx, Mismatch _) ->
+                    runHandler (ii + 1)
+                  -- TODO: Handle other kinds of failure
+                  Right result -> substitute result
+      in
+      if any isNothing headArgs
+        then error "not fully applied!" -- TODO: Handle partial application
+        else runHandler 0
