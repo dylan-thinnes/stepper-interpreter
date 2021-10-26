@@ -428,6 +428,8 @@ handle env exp = go (projectK exp)
         remainingDecls -> do
           emitLog "Reducing LetBody"
           toSubExpressionEnv (foldMap defines decls) [bodyIdx]
+  go (CaseEF (_, LetE decls body) branches) = -- TODO: This is a workaround for let-scoping/closure-scoping issues
+    substitute (LetE decls (CaseE body branches))
   go (CaseEF (targetIdx, target) branches) =
     handleBranch 0
     where
