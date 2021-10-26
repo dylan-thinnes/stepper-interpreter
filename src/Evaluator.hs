@@ -492,13 +492,24 @@ handle env exp = go (projectK exp)
             case definition of
               CustomFD cardinality _ -> cardinality
               ClausesFD (Clause pats _ _:_) -> length pats -- function definitions should have at least one clause
-          clauseToHandler = undefined
+          clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) Exp
+          clauseToHandler (Clause pats body wheres) args =
+            let NormalB expBody = body -- TODO: Handle guards
+                clauseMatches = zip [0..] $ zipWith matchPatKeyed pats args
+                go [] = Right []
+                go ((_, Right matches):rest) = (matches ++) <$> go rest
+                go ((i, Left err):rest) = Left (i, err)
+            in
+            case go clauseMatches of
+              Left err -> Left err
+              Right bindings -> Right $ letWrap (map patExpPairToValDecl bindings ++ wheres) expBody -- TODO: Do where decls take precedence over arguments?
           handlers =
             case definition of
               CustomFD _ handler -> [unCustomShow handler]
               ClausesFD clauses -> map clauseToHandler clauses
-          headArgs = take cardinality args
-          remainingArgs = take cardinality args
+          headArgs, remainingArgs :: [Maybe Exp]
+          headArgs = take cardinality $ map (fmap deann) args
+          remainingArgs = take cardinality $ map (fmap deann) args
           (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
           runHandler ii =
             if length handlers <= ii
@@ -506,12 +517,13 @@ handle env exp = go (projectK exp)
               else
                 let handler = handlers !! ii
                 in
-                case handler (deann . fromJust <$> headArgs) of
-                  Left (argIdx, NeedsReduction (_, argSubPath)) ->
+                case handler (fromJust <$> headArgs) of
+                  Left (argIdx, NeedsReduction (_, argSubPath)) -> do
+                    emitLog $ show argIdx ++ "th argument needs further reduction"
                     let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
-                    in
                     toSubExpression (path ++ argSubPath)
-                  Left (argIdx, Mismatch _) ->
+                  Left (argIdx, Mismatch _) -> do
+                    emitLog $ show argIdx ++ "th clause did not match"
                     runHandler (ii + 1)
                   -- TODO: Handle other kinds of failure
                   Right result -> substitute (modExpByKey (const result) targetFunctionPath exp)
