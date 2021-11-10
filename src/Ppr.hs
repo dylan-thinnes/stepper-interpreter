@@ -94,7 +94,10 @@ rbq = removeBaseQualifications
 instance RemoveBaseQualifications Name where
   removeBaseQualifications name
     | (Name occName (NameG namespace pkgName modName)) <- name
-    , pkgName == PkgName "base"
+    , or
+        [ pkgName == PkgName "base"
+        , pkgName == PkgName "ghc-prim"
+        ]
     = Name occName NameS
     | otherwise
     = name
