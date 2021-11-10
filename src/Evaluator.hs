@@ -296,8 +296,12 @@ patToIsListG
   => (forall a. f a -> PatF a)
   -> t -> IsList t
 patToIsListG extractPattern pat
-  -- A cons constructor, applied to two expressions
+  -- A cons constructor, applied to two expressions, prefix
   | ConPF patConName [headArg, tailArg] <- extractPattern $ R.project pat
+  , patConName == '(:)
+  = IsCons headArg tailArg
+  -- A cons constructor, applied to two expressions, infix
+  | InfixPF headArg patConName tailArg <- extractPattern $ R.project pat
   , patConName == '(:)
   = IsCons headArg tailArg
   -- A nil constructor
