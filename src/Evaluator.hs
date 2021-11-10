@@ -574,6 +574,18 @@ handle env exp = go (projectK exp)
       if any isNothing headArgs
         then error "not fully applied!" -- TODO: Handle partial application
         else runHandler 0
+    | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys exp)
+    , ConE _ <- traceShow "bleh:" $ traceShowId $ deann func
+    = let f i (Nothing:rest) = f (i + 1) rest
+          f i (Just (Fix (Pair (Const path) _)):rest) = do
+            reduction <- toSubExpression path env exp
+            traceShowM (i, isCannotReduce reduction)
+            case reduction of
+              CannotReduce _ -> f (i + 1) rest
+              NewlyReduced exp -> pure $ NewlyReduced exp
+          f _ [] = pure $ CannotReduce exp
+      in
+      f 0 args
 
 data InstantLog a = InstantLog (Maybe String) a
   deriving (Show, Eq, Ord, Functor)
