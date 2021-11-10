@@ -516,6 +516,7 @@ handle env exp = go (projectK exp)
           toSubExpression (condIdx : expKey) env exp
         Left (UnexpectedErrorMatch _ _) ->
           error "Unexpected error in matching process - this should not happen!"
+  go (LitEF _) = pure $ CannotReduce exp
   go _
     | FlattenedApps { func, args } <- flattenAppsKeyed (annKeys exp)
     , VarE name <- deann func
