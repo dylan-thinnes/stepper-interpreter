@@ -381,8 +381,8 @@ redexOrderF (AppE func arg) = []
 emitLog :: Loggable m => String -> m ()
 emitLog = instantLog
 
-substitute :: Monad m => Exp -> m Exp
-substitute = return
+substitute :: Monad m => Exp -> m ReductionResult
+substitute = return . NewlyReduced
 
 nameUsedIn :: Exp -> Name -> Bool
 nameUsedIn exp name = name `elem` childrenBi exp -- todo: does not even remotely cover all uses
@@ -395,16 +395,35 @@ letWrap :: [Dec] -> Exp -> Exp
 letWrap [] e = e
 letWrap xs e = LetE xs e
 
-toSubExpression :: (Monad m, Loggable m) => ExpKey -> Environment -> Exp -> m Exp
-toSubExpression path env exp = modExpByKeyA (handle env) path exp
+toSubExpression :: (Monad m, Loggable m) => ExpKey -> Environment -> Exp -> m ReductionResult
+toSubExpression path env exp =
+  unwrapReductionT $ modExpByKeyA (ReductionT . handle env) path exp
 
-toSubExpressionEnv :: (Monad m, Loggable m) => Environment -> ExpKey -> Environment -> Exp -> m Exp
-toSubExpressionEnv newEnv path env exp = modExpByKeyA (handle (M.unionWith const newEnv env)) path exp
+toSubExpressionEnv :: (Monad m, Loggable m) => Environment -> ExpKey -> Environment -> Exp -> m ReductionResult
+toSubExpressionEnv newEnv path env exp =
+  unwrapReductionT $ modExpByKeyA (ReductionT . handle (M.unionWith const newEnv env)) path exp
 
-handle :: forall m. (Monad m, Loggable m) => Environment -> Exp -> m Exp
+data ReductionResultF a = CannotReduce a | NewlyReduced a
+  deriving (Show, Functor)
+
+nr :: a -> ReductionResultF a
+nr = NewlyReduced
+
+type ReductionResult = ReductionResultF Exp
+newtype ReductionT m a = ReductionT { unwrapReductionT :: m (ReductionResultF a) }
+
+instance Monad m => Monad (ReductionT m) where
+  ma >>= f = ReductionT $ do
+    rra <- unwrapReductionT ma
+    let a = case rra of
+              CannotReduce a -> a
+              NewlyReduced a -> a
+    unwrapReductionT $ f a
+
+handle :: forall m. (Monad m, Loggable m) => Environment -> Exp -> m ReductionResult
 handle env exp = go (projectK exp)
   where
-  go :: ExpF (Key ExpF, Exp) -> m Exp
+  go :: ExpF (Key ExpF, Exp) -> m ReductionResult
   go (LetEF decls (bodyIdx, body)) =
     let extractMatchingPat orig@(ValD pat (NormalB exp) _) -- TODO: handle guards
           | VarP _ <- pat
