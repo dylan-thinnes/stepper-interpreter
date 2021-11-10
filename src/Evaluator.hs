@@ -335,6 +335,7 @@ data CustomShow a = CustomShow { msg :: String, unCustomShow :: a }
 instance Show (CustomShow a) where
   show (CustomShow msg _) = msg
 
+-- TODO: Deal with environment clobbering names that are used repeatedly, i.e. let a = 1 in let a = a + 4 in a
 type Environment = Map Name Declarable
 
 defaultEnvironment :: Environment
