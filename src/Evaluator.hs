@@ -408,6 +408,10 @@ data ReductionResultF a
   | NewlyReduced { unwrapReductionResult :: a }
   deriving (Show, Functor)
 
+isCannotReduce :: ReductionResultF a -> Bool
+isCannotReduce (CannotReduce _) = True
+isCannotReduce _ = False
+
 nr :: a -> ReductionResultF a
 nr = NewlyReduced
 

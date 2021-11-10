@@ -51,9 +51,15 @@ w = $(lift =<< [|
   |])
 
 run :: Exp -> IO ()
-run exp = mapM_ printExp steps
+run exp = do
+  printExp exp
+  mapM_ printExp $ map unwrapReductionResult reductionSteps
+  printExp $ unwrapReductionResult lastStep
   where
-  steps = iterate (runInstantLog . handle defaultEnvironment) exp
+  run = runInstantLog . handle  defaultEnvironment
+  steps = iterate (run . unwrapReductionResult) (run exp)
+  reductionSteps = takeWhile (not . isCannotReduce) steps
+  lastStep = head $ dropWhile (not . isCannotReduce) steps
   printExp x = do
     putStrLn "============"
     let source = P.pprint $ P.removeBaseQualifications x
