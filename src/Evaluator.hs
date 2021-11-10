@@ -421,7 +421,9 @@ newtype ReductionT m a = ReductionT { unwrapReductionT :: m (ReductionResultF a)
 
 instance Applicative ReductionResultF where
   pure = NewlyReduced
-  (<*>) mf ma = unwrapReductionResult mf <$> ma
+  (<*>) (CannotReduce mf) ma = CannotReduce $ mf (unwrapReductionResult ma)
+  (<*>) mf (CannotReduce ma) = CannotReduce $ unwrapReductionResult mf ma
+  (<*>) mf ma = NewlyReduced $ unwrapReductionResult mf (unwrapReductionResult ma)
 
 instance Applicative m => Applicative (ReductionT m) where
   pure = ReductionT . pure . pure
