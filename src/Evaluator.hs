@@ -403,7 +403,9 @@ toSubExpressionEnv :: (Monad m, Loggable m) => Environment -> ExpKey -> Environm
 toSubExpressionEnv newEnv path env exp =
   unwrapReductionT $ modExpByKeyA (ReductionT . handle (M.unionWith const newEnv env)) path exp
 
-data ReductionResultF a = CannotReduce a | NewlyReduced a
+data ReductionResultF a
+  = CannotReduce { unwrapReductionResult :: a }
+  | NewlyReduced { unwrapReductionResult :: a }
   deriving (Show, Functor)
 
 nr :: a -> ReductionResultF a
@@ -411,6 +413,15 @@ nr = NewlyReduced
 
 type ReductionResult = ReductionResultF Exp
 newtype ReductionT m a = ReductionT { unwrapReductionT :: m (ReductionResultF a) }
+  deriving (Functor)
+
+instance Applicative ReductionResultF where
+  pure = NewlyReduced
+  (<*>) mf ma = unwrapReductionResult mf <$> ma
+
+instance Applicative m => Applicative (ReductionT m) where
+  pure = ReductionT . pure . pure
+  (<*>) (ReductionT mf) (ReductionT ma) = ReductionT $ fmap (<*>) mf <*> ma
 
 instance Monad m => Monad (ReductionT m) where
   ma >>= f = ReductionT $ do
