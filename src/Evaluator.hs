@@ -24,7 +24,7 @@ import "base" Data.Functor.Const
 import "base" Data.Functor.Product
 import "base" Data.Functor.Identity
 import "base" Data.Either (isRight)
-import "base" Data.Maybe (isNothing, catMaybes, fromJust)
+import "base" Data.Maybe (isNothing, catMaybes, fromJust, mapMaybe)
 import "base" Data.Void
 import "base" Data.Data
 import "base" GHC.Generics
@@ -196,8 +196,9 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
           | otherwise
           = needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
 
-patExpPairToValDecl :: (Pat, Exp) -> Dec
-patExpPairToValDecl (pat, exp) = ValD pat (NormalB exp) []
+patExpPairToValDecl :: (Pat, Exp) -> Maybe Dec
+patExpPairToValDecl (VarP patName, VarE expName) | patName == expName = Nothing
+patExpPairToValDecl (pat, exp) = Just $ ValD pat (NormalB exp) []
 
 -- ================== FUNCTION APPLICATION IN EXPRESSIONS
 
@@ -454,11 +455,8 @@ handle env exp = go (projectK exp)
     in
     if any isRight matchingPats
     then do
-      let explodeMatchingPat :: (Pat, Exp) -> Dec
-          explodeMatchingPat (pat, exp) = ValD pat (NormalB exp) []
-
-          explodedMatchingPats :: [Dec]
-          explodedMatchingPats = concat $ either (:[]) (map explodeMatchingPat) <$> matchingPats
+      let explodedMatchingPats :: [Dec]
+          explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
       emitLog "Exploding completed patterns in Let"
       substitute (letWrap explodedMatchingPats body)
     else
@@ -481,7 +479,7 @@ handle env exp = go (projectK exp)
       = let Match pat body decls = branches !! ii
             NormalB expBody = body -- TODO: handle guards
             explodeIntoLet boundVars =
-              letWrap (map patExpPairToValDecl boundVars ++ decls) expBody
+              letWrap (mapMaybe patExpPairToValDecl boundVars ++ decls) expBody
         in
         case matchPatKeyed pat target of
           Right boundVars -> do
@@ -545,7 +543,7 @@ handle env exp = go (projectK exp)
             in
             case go clauseMatches of
               Left err -> Left err
-              Right bindings -> Right $ letWrap (map patExpPairToValDecl bindings ++ wheres) expBody -- TODO: Do where decls take precedence over arguments?
+              Right bindings -> Right $ letWrap (mapMaybe patExpPairToValDecl bindings ++ wheres) expBody -- TODO: Do where decls take precedence over arguments?
           handlers =
             case definition of
               CustomFD _ handler -> [unCustomShow handler]
@@ -575,11 +573,10 @@ handle env exp = go (projectK exp)
         then error "not fully applied!" -- TODO: Handle partial application
         else runHandler 0
     | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys exp)
-    , ConE _ <- traceShow "bleh:" $ traceShowId $ deann func
+    , ConE _ <- deann func
     = let f i (Nothing:rest) = f (i + 1) rest
           f i (Just (Fix (Pair (Const path) _)):rest) = do
             reduction <- toSubExpression path env exp
-            traceShowM (i, isCannotReduce reduction)
             case reduction of
               CannotReduce _ -> f (i + 1) rest
               NewlyReduced exp -> pure $ NewlyReduced exp
