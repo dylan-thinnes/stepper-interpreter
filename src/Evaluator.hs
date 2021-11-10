@@ -603,8 +603,9 @@ runInstantLog (InstantLog (Just msg) a) = traceShow msg a
 class Loggable m where
   instantLog :: String -> m ()
 
+-- Make Identity ignore messages
 instance Loggable Identity where
-  instantLog msg = traceShow msg $ pure ()
+  instantLog msg = pure ()
 
 instance Loggable InstantLog where
   instantLog msg = InstantLog (Just msg) ()
