@@ -583,7 +583,8 @@ instance Applicative InstantLog where
 
 instance Monad InstantLog where
   (>>=) a f = f (runInstantLog a)
-  (>>) (InstantLog aMsg a) b = traceShow aMsg b
+  (>>) (InstantLog Nothing a) b = b
+  (>>) (InstantLog (Just msg) a) b = traceShow msg b
 
 runInstantLog (InstantLog Nothing a) = a
 runInstantLog (InstantLog (Just msg) a) = traceShow msg a
