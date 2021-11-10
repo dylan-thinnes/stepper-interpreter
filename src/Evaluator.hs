@@ -564,7 +564,7 @@ handle env exp = go (projectK exp)
                   Left (argIdx, NeedsReduction (_, argSubPath)) -> do
                     emitLog $ show argIdx ++ "th argument needs further reduction"
                     let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
-                    toSubExpression (path ++ argSubPath) env exp
+                    toSubExpression (path ++ argSubPath) env exp -- TODO: Do we need to handle CannotReduce?
                   Left (argIdx, Mismatch _) -> do
                     emitLog $ show argIdx ++ "th clause did not match"
                     runHandler (ii + 1)
