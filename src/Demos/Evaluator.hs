@@ -50,6 +50,16 @@ w = $(lift =<< [|
   x * x
   |])
 
+v :: Exp
+v = $(lift =<< [|
+  let g Nothing = 0
+      g (Just x) = x * x
+      map f (x:xs) = f x : map f xs
+      map f [] = []
+  in
+  map g [Just 1, Nothing, Just 2, Nothing, Just 3]
+  |])
+
 run :: Exp -> IO ()
 run exp = do
   printExp exp
