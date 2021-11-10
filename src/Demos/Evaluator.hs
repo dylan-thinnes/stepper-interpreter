@@ -34,11 +34,28 @@ y = $(lift =<< [|
     Just y -> y * 2
   |])
 
+z :: Exp
+z = $(lift =<< [|
+  let g x = x * x
+      map f (x:xs) = f x : map f xs
+      map f [] = []
+  in
+  map g [1,2,3]
+  |])
+
+w :: Exp
+w = $(lift =<< [|
+  let x = 2 + 2
+  in
+  x * x
+  |])
+
 run :: Exp -> IO ()
 run exp = mapM_ printExp steps
   where
-  steps = iterate (runIdentity . handle defaultEnvironment) exp
+  steps = iterate (runInstantLog . handle defaultEnvironment) exp
   printExp x = do
     putStrLn "============"
-    highlighted <- readProcess "/usr/bin/batcat" (words "-l haskell -pp --color always -") (P.pprint $ P.removeBaseQualifications x)
+    let source = P.pprint $ P.removeBaseQualifications x
+    highlighted <- readProcess "/usr/bin/batcat" (words "--theme zenburn -l haskell -pp --color always -") source
     putStr highlighted
