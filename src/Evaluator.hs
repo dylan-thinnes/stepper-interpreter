@@ -206,6 +206,7 @@ data FlattenedApps a = FlattenedApps
   , args :: [Maybe a]
   , intermediateFuncs :: [(Int, a)]
   }
+  deriving Show
 
 getIntermediateFunc :: Int -> [(Int, a)] -> (Int, Int, a)
 getIntermediateFunc n [] = error "getIntermediateFunc: ran out of functions"
