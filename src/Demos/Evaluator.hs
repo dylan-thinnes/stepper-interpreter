@@ -14,8 +14,8 @@ import Evaluator
 import Lift
 import Ppr qualified as P
 
-x :: Exp
-x = $(lift =<< [|
+testCase :: Exp
+testCase = $(lift =<< [|
   let t = 10
       k = 1
   in
@@ -24,8 +24,8 @@ x = $(lift =<< [|
     Just y -> y + 1
   |])
 
-y :: Exp
-y = $(lift =<< [|
+testCaseOnFuncApp :: Exp
+testCaseOnFuncApp = $(lift =<< [|
   let t z = Just (10 + z)
       k = 3
   in
@@ -34,8 +34,8 @@ y = $(lift =<< [|
     Just y -> y * 2
   |])
 
-z :: Exp
-z = $(lift =<< [|
+testListMap :: Exp
+testListMap = $(lift =<< [|
   let g x = x * x
       map f (x:xs) = f x : map f xs
       map f [] = []
@@ -43,15 +43,15 @@ z = $(lift =<< [|
   map g [1,2,3]
   |])
 
-w :: Exp
-w = $(lift =<< [|
+testSquareOfSum :: Exp
+testSquareOfSum = $(lift =<< [|
   let x = 2 + 2
   in
   x * x
   |])
 
-v :: Exp
-v = $(lift =<< [|
+testConstructorsInListMap :: Exp
+testConstructorsInListMap = $(lift =<< [|
   let g Nothing = 0
       g (Just x) = x * x
       map f (x:xs) = f x : map f xs
