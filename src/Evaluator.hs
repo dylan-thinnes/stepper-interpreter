@@ -395,15 +395,15 @@ letWrap :: [Dec] -> Exp -> Exp
 letWrap [] e = e
 letWrap xs e = LetE xs e
 
+toSubExpression :: (Monad m, Loggable m) => ExpKey -> Environment -> Exp -> m Exp
+toSubExpression path env exp = modExpByKeyA (handle env) path exp
+
+toSubExpressionEnv :: (Monad m, Loggable m) => Environment -> ExpKey -> Environment -> Exp -> m Exp
+toSubExpressionEnv newEnv path env exp = modExpByKeyA (handle (M.unionWith const newEnv env)) path exp
+
 handle :: forall m. (Monad m, Loggable m) => Environment -> Exp -> m Exp
 handle env exp = go (projectK exp)
   where
-  toSubExpression :: ExpKey -> m Exp
-  toSubExpression path = modExpByKeyA (handle env) path exp
-
-  toSubExpressionEnv :: Environment -> ExpKey -> m Exp
-  toSubExpressionEnv newEnv path = modExpByKeyA (handle (M.unionWith const newEnv env)) path exp
-
   go :: ExpF (Key ExpF, Exp) -> m Exp
   go (LetEF decls (bodyIdx, body)) =
     let extractMatchingPat orig@(ValD pat (NormalB exp) _) -- TODO: handle guards
@@ -432,7 +432,7 @@ handle env exp = go (projectK exp)
           substitute body
         remainingDecls -> do
           emitLog "Reducing LetBody"
-          toSubExpressionEnv (foldMap defines decls) [bodyIdx]
+          toSubExpressionEnv (foldMap defines decls) [bodyIdx] env exp
   go (CaseEF (_, LetE decls body) branches) = -- TODO: This is a workaround for let-scoping/closure-scoping issues
     substitute (LetE decls (CaseE body branches))
   go (CaseEF (targetIdx, target) branches) =
@@ -457,7 +457,7 @@ handle env exp = go (projectK exp)
             handleBranch (ii + 1)
           Left (NeedsReduction (patKey, expKey)) -> do
             emitLog "Case expression needs further reduction"
-            toSubExpression (targetIdx : expKey)
+            toSubExpression (targetIdx : expKey) env exp
           Left (UnexpectedErrorMatch _ _) ->
             error "Unexpected error in matching process - this should not happen!"
   go (CondEF (condIdx, cond) (_, true) (_, false)) =
@@ -477,7 +477,7 @@ handle env exp = go (projectK exp)
             else error "CondE has mismatch with both False and True!"
         Left (NeedsReduction (patKey, expKey)) -> do
           emitLog "Case expression needs further reduction"
-          toSubExpression (condIdx : expKey)
+          toSubExpression (condIdx : expKey) env exp
         Left (UnexpectedErrorMatch _ _) ->
           error "Unexpected error in matching process - this should not happen!"
   go _
@@ -526,7 +526,7 @@ handle env exp = go (projectK exp)
                   Left (argIdx, NeedsReduction (_, argSubPath)) -> do
                     emitLog $ show argIdx ++ "th argument needs further reduction"
                     let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
-                    toSubExpression (path ++ argSubPath)
+                    toSubExpression (path ++ argSubPath) env exp
                   Left (argIdx, Mismatch _) -> do
                     emitLog $ show argIdx ++ "th clause did not match"
                     runHandler (ii + 1)
