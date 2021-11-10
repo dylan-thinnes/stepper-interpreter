@@ -481,13 +481,14 @@ handle env exp = go (projectK exp)
         Left (UnexpectedErrorMatch _ _) ->
           error "Unexpected error in matching process - this should not happen!"
   go _
-    | FlattenedApps { func, args = [] } <- flattenAppsKeyed (annKeys exp)
+    | FlattenedApps { func, args } <- flattenAppsKeyed (annKeys exp)
     , VarE name <- deann func
+    , let (Fix (Pair (Const funcIdx) _)) = func
     , definition <- maybe (error "variable lookup failed") id $ lookupDefinition name env -- TODO: handle failed lookup
     , ValueDeclaration pat body wheres <- definition -- TODO: handle lookup for a function (probably means an error in flattenApps)
     , NormalB bodyExp <- body -- TODO: handle guards
     , VarP name <- pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
-    = substitute (letWrap wheres bodyExp)
+    = substitute $ modExpByKey (const $ letWrap wheres bodyExp) funcIdx exp
     | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys exp)
     , VarE name <- deann func
     , FunctionDeclaration definition <- maybe (error "function lookup failed") id $ lookupDefinition name env
