@@ -520,7 +520,7 @@ handle env exp = go (projectK exp)
     | FlattenedApps { func, args } <- flattenAppsKeyed (annKeys exp)
     , VarE name <- deann func
     , let (Fix (Pair (Const funcIdx) _)) = func
-    , definition <- maybe (error "variable lookup failed") id $ lookupDefinition name env -- TODO: handle failed lookup
+    , definition <- maybe (error $ "variable lookup failed " ++ show name ++ "," ++ show (M.keys env)) id $ lookupDefinition name env -- TODO: handle failed lookup
     , ValueDeclaration pat body wheres <- definition -- TODO: handle lookup for a function (probably means an error in flattenApps)
     , NormalB bodyExp <- body -- TODO: handle guards
     , VarP name <- pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
