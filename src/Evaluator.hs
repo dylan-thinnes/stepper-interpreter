@@ -511,7 +511,7 @@ handle env exp = go (projectK exp)
             then tryMatchBool False
             else error "CondE has mismatch with both False and True!"
         Left (NeedsReduction (patKey, expKey)) -> do
-          emitLog "Case expression needs further reduction"
+          emitLog "Cond's expression needs further reduction"
           toSubExpression (condIdx : expKey) env exp
         Left (UnexpectedErrorMatch _ _) ->
           error "Unexpected error in matching process - this should not happen!"
