@@ -451,7 +451,10 @@ letWrap [] e = e
 letWrap xs e = LetE xs e
 
 nameUsedIn :: Exp -> Name -> Bool
-nameUsedIn exp name = name `elem` childrenBi exp -- TODO: does not cover all uses, AT ALL (only checks Exp nodes)
+nameUsedIn exp name = name `elem` collectNames exp -- TODO: does not cover all uses, AT ALL (only checks Exp nodes)
+  where
+    collectNames :: Exp -> [Name]
+    collectNames = fst . transformMutM @Exp @Name (\x -> ([x], x))
 
 isDeclLivingIn :: Exp -> Dec -> Bool
 isDeclLivingIn exp (FunD name _) = nameUsedIn exp name
@@ -495,11 +498,12 @@ reduce exp = match (keyed expf)
             explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
         pure $ NewlyReduced $ letWrap explodedMatchingPats (deann body)
       else
-        case filter (isDeclLivingIn (deann body)) decls of -- TODO: circular definitions & other AST traversals, so we can remove one-at-a-time
-          [] -> do
-            pure $ NewlyReduced (deann body)
-          remainingDecls -> do
-            reduceSubExp [bodyIdx]
+        -- TODO: circular definitions & other AST traversals, so we can remove one-at-a-time
+        let remainingDecls = filter (isDeclLivingIn (deann body)) decls
+        in
+        if length remainingDecls < length decls
+          then pure $ NewlyReduced $ letWrap remainingDecls (deann body)
+          else reduceSubExp [bodyIdx]
 
     -- handle if statements
     match (CondEF (condIdx, cond) (_, true) (_, false)) =
