@@ -105,19 +105,22 @@ prog = $(lift =<< [|
     Just y -> y
   |])
 
-  {-
 run :: Exp -> IO ()
 run exp = do
-  printExp exp
-  mapM_ printExp $ map unwrapReductionResult reductionSteps
+  printExp (Right $ NewlyReduced exp)
+  mapM_ (\exp -> printExp exp >> getLine) reductionSteps
   where
-  run = runIdentity . handle  defaultEnvironment
-  steps = iterate (run . unwrapReductionResult) (run exp)
-  reductionSteps = takeWhile (not . isCannotReduce) steps
-  printExp x = do
+  reductionSteps :: [Either String ReductionResult]
+  reductionSteps = takeWhile (either (const True) (not . isCannotReduce)) steps
+
+  steps :: [Either String ReductionResult]
+  steps = iterate (\exp -> evaluate defaultEnvironment =<< fmap getRedRes exp) (evaluate defaultEnvironment exp)
+
+  printExp :: Either String ReductionResult -> IO ()
+  printExp (Left err) =
+    putStr $ "Error: " ++ err
+  printExp (Right redRes) = do
     putStrLn "============"
-    let source = P.pprint $ P.removeBaseQualifications x
+    let source = P.pprint $ P.removeBaseQualifications (getRedRes redRes)
     highlighted <- readProcess "/usr/bin/batcat" (words "--theme zenburn -l haskell -pp --color always -") source
     putStr highlighted
-    getLine
-  -}
