@@ -29,8 +29,6 @@ import "base" Data.Void
 import "base" Data.Data
 import "base" GHC.Generics
 
-import "uniplate" Data.Generics.Uniplate.Data
-
 import qualified "containers" Data.Map as M
 import           "containers" Data.Map (Map)
 
@@ -42,6 +40,8 @@ import "pretty" Text.PrettyPrint.Annotated (renderSpans)
 
 import "template-haskell" Language.Haskell.TH
 import "template-haskell" Language.Haskell.TH.Syntax (Lift(..), Name(..), NameFlavour(..))
+
+import "uniplate" Data.Generics.Uniplate.Data
 
 import "recursion-schemes" Data.Functor.Foldable qualified as R
 import "recursion-schemes" Data.Functor.Foldable.TH qualified as R
