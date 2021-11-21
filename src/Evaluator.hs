@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
@@ -400,25 +401,24 @@ envExpAt topEnv topExp startingKey =
         [] -> Left (newEnv, exp)
         head:rest -> adjustRecursive (\exp -> go newEnv exp rest) [head] exp
 
--- Find declaration bound to a name at a point in the tree
-lookupNameAt :: Environment -> Exp -> Name -> ExpKey -> Maybe Declarable
-lookupNameAt topEnv topExp name key = do
-  (env, _) <- envExpAt topEnv topExp key
-  lookupDefinition name env
-
 type EvaluateM = ReaderT (HaltReason -> HaltResponse) (Except String)
 
 data HaltReason
   = LookupVariable Name ExpKey
 
 data HaltResponse
-  = VariableFound Declarable
-  | VariableNotFound
+  = LookupVariableFound Declarable
+  | LookupVariableNotFound Environment Exp
+  | LookupVariableNodeMissing
 
 data ReductionResultF a
   = CannotReduce { getRedRes :: a }
   | NewlyReduced { getRedRes :: a }
   deriving (Show, Functor)
+
+isCannotReduce :: ReductionResultF a -> Bool
+isCannotReduce (CannotReduce _) = True
+isCannotReduce _ = False
 
 type ReductionResult = ReductionResultF Exp
 
@@ -432,9 +432,12 @@ evaluate :: Environment -> Exp -> Either String ReductionResult
 evaluate topEnv exp = runExcept $ runReaderT (reduce exp) haltHandler
   where
     haltHandler (LookupVariable name expKey) =
-      case lookupNameAt topEnv exp name expKey of
-        Nothing -> VariableNotFound
-        Just declarable -> VariableFound declarable
+      case envExpAt topEnv exp expKey of
+        Nothing -> LookupVariableNodeMissing
+        Just (env, targetNode) ->
+          case lookupDefinition name env of
+            Nothing -> LookupVariableNotFound env targetNode
+            Just definition -> LookupVariableFound definition
 
 fullyEvaluate :: Environment -> Exp -> Either String Exp
 fullyEvaluate env exp = do
@@ -545,16 +548,17 @@ reduce exp = match (keyed expf)
       case declaration of
         -- TODO: handle failed lookup
         -- TODO: handle when looked-up var is not a function
-        VariableNotFound -> undefined
-        VariableFound (ValueDeclaration pat body wheres) -> -- TODO: handle lookup of a lambda (probably means an error in flattenApps)
+        LookupVariableNodeMissing -> throwError $ "Couldn't find target node, this is a serious error, please contact." -- TODO: Classify error severity
+        LookupVariableNotFound env target -> throwError $ "Couldn't find function " ++ show name ++ "\n  at node: " ++ pprint target ++ "\n  in environment: " ++ show env
+        LookupVariableFound (ValueDeclaration pat body wheres) -> -- TODO: handle lookup of a lambda (probably means an error in flattenApps)
           let Fix (Pair (Const funcIdx) _) = func
               NormalB bodyExp = body -- TODO: handle guards
               VarP name = pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
           in
           pure $ NewlyReduced $ modExpByKey (const $ letWrap wheres bodyExp) funcIdx exp
-        VariableFound (DataField pat exp) ->
+        LookupVariableFound (DataField pat exp) ->
           error "reduce: Cannot handle data accessors yet"
-        VariableFound (FunctionDeclaration definition) ->
+        LookupVariableFound (FunctionDeclaration definition) ->
           let cardinality :: Int
               cardinality =
                 case definition of
