@@ -142,10 +142,24 @@ embedK = R.embed . dekeyed
 adjustRecursive
   :: (R.Base t ~ f, Adjustable f, Traversable f, R.Corecursive t, R.Recursive t, Applicative m)
   => (t -> m t) -> [Key (R.Base t)] -> t -> m t
-adjustRecursive f [] t = f t
-adjustRecursive f (k:rest) t =
+adjustRecursive f keys t = adjustRecursiveGA f adjust keys t
+
+adjustRecursiveG
+  :: (f ~ R.Base t, Traversable f, R.Corecursive t, R.Recursive t)
+  => (t -> t)
+  -> (forall a. (a -> a) -> k -> f a -> f a)
+  -> [k] -> t -> t
+adjustRecursiveG f adjust keys t = runIdentity $ adjustRecursiveGA (Identity . f) adjust keys t
+
+adjustRecursiveGA
+  :: (f ~ R.Base t, Traversable f, R.Corecursive t, R.Recursive t, Applicative m)
+  => (t -> m t)
+  -> (forall a. (a -> a) -> k -> f a -> f a)
+  -> [k] -> t -> m t
+adjustRecursiveGA f adjust [] t = f t
+adjustRecursiveGA f adjust (k:rest) t =
   -- have to do these shenanigans because `adjust` can't change type inside container
-  let modifyWithWitness (_, a) = (adjustRecursive f rest a, a)
+  let modifyWithWitness (_, a) = (adjustRecursiveGA f adjust rest a, a)
       pureWithWitness a = (pure a, a)
   in
   fmap R.embed
@@ -155,13 +169,6 @@ adjustRecursive f (k:rest) t =
     $ fmap pureWithWitness
     $ R.project t
 
-adjustRecursiveG
-  :: (R.Corecursive t, R.Recursive t)
-  => (t -> t)
-  -> (forall a. (a -> a) -> k -> R.Base t a -> R.Base t a)
-  -> [k] -> t -> t
-adjustRecursiveG f adjust [] t = f t
-adjustRecursiveG f adjust (k:rest) t = R.embed $ adjust (adjustRecursiveG f adjust rest) k $ R.project t
 
 listifyKey :: (a, b) -> ([a], b)
 listifyKey = first (\x -> [x])

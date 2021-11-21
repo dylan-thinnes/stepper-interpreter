@@ -43,7 +43,7 @@ type AnnotatedPat = Annotated PatF
 noann :: (Functor f, R.Corecursive t, R.Recursive t, f ~ R.Base t) => t -> Annotated f
 noann = R.hoist (Pair (Const Nothing))
 
-attachAnn :: (Adjustable f, Functor f) => [Key f] -> Annotation -> Annotated f -> Annotated f
+attachAnn :: (Adjustable f, Functor f, Traversable f) => [Key f] -> Annotation -> Annotated f -> Annotated f
 attachAnn key ann = adjustRecursiveG setAnn modify key
   where
     setAnn (Fix (Pair _ expf)) = Fix $ Pair (Const (Just ann)) expf
