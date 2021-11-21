@@ -1,4 +1,11 @@
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImportQualifiedPost #-}
@@ -12,6 +19,7 @@
 
 module Lift where
 
+import "base" Control.Monad ((<=<))
 import "base" Data.Bifunctor
 import "base" Data.Functor.Compose
 import "base" Data.Functor.Const
@@ -19,6 +27,7 @@ import "base" Data.Functor.Identity
 import "base" Data.Functor.Product
 import "base" Foreign.ForeignPtr
 import "base" GHC.Generics (Generic1(..))
+import "base" Data.Data qualified as DD
 
 import "data-fix" Data.Fix (Fix(..))
 
@@ -28,6 +37,8 @@ import "keys" Data.Key (Key(..), Keyed(..), keyed, Adjustable(..))
 
 import "template-haskell" Language.Haskell.TH
 import "template-haskell" Language.Haskell.TH.Syntax
+
+import "uniplate" Data.Generics.Uniplate.Data
 
 import "recursion-schemes" Data.Functor.Foldable qualified as R
 import "recursion-schemes" Data.Functor.Foldable.TH qualified as R
@@ -183,3 +194,107 @@ toKeyPairDeann ann =
   let (key, expf) = toKeyPair ann
   in
   (key, R.embed $ fmap deann expf)
+
+class Mutplate from to where
+  transformMutM :: Monad m => (to -> m to) -> from -> m from
+
+instance Mutplate Name Name where
+  transformMutM = id
+
+deriving instance DD.Data a => DD.Data (ExpF a)
+deriving instance DD.Data a => DD.Data (PatF a)
+
+instance
+  ( DD.Data a
+  , DD.Data (f (Fix (Ann a f)))
+  , Traversable f
+  , Mutplate (f (Fix (Ann a f))) to
+  ) => Mutplate (Fix (Ann a f)) to where
+  transformMutM :: forall m. Monad m => (to -> m to) -> Fix (Ann a f) -> m (Fix (Ann a f))
+  transformMutM f (Fix (Pair cmann expf)) =
+    fmap (Fix . Pair cmann) $ transformMutM f =<< traverse (transformMutM f) expf
+    where
+      f' :: f (Fix (Ann a f)) -> m (f (Fix (Ann a f)))
+      f' expf = transformMutM @(f _) @to f expf
+
+instance DD.Data a => Mutplate (PatF a) Name where
+  transformMutM f
+    = transformBiM @_ @(PatF a) @Name (transformMutM f)
+    <=< transformBiM @_ @(PatF a) @Exp (transformMutM f)
+    <=< transformBiM @_ @(PatF a) @FieldPat (transformMutM f)
+
+instance DD.Data a => Mutplate (ExpF a) Name where
+  transformMutM f
+    = transformBiM @_ @(ExpF a) @Name (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @Guard (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @Pat (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @Type (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @Stmt (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @FieldExp (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @Match (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @Range (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @Dec (transformMutM f)
+
+instance Mutplate Exp Name where
+  transformMutM f
+    = transformBiM @_ @Exp @Name (transformMutM f)
+    <=< transformBiM @_ @Exp @Guard (transformMutM f)
+    <=< transformBiM @_ @Exp @Pat (transformMutM f)
+    <=< transformBiM @_ @Exp @Type (transformMutM f)
+    <=< transformBiM @_ @Exp @Stmt (transformMutM f)
+    <=< transformBiM @_ @Exp @FieldExp (transformMutM f)
+    <=< transformBiM @_ @Exp @Match (transformMutM f)
+    <=< transformBiM @_ @Exp @Range (transformMutM f)
+    <=< transformBiM @_ @Exp @Dec (transformMutM f)
+
+instance Mutplate Pat Name where
+  transformMutM f
+    = transformBiM @_ @Pat @Name (transformMutM f)
+    <=< transformBiM @_ @Pat @Exp (transformMutM f)
+    <=< transformBiM @_ @Pat @FieldPat (transformMutM f)
+
+instance Mutplate FieldPat Name where
+  transformMutM f
+    = transformBiM @_ @FieldPat @Name (transformMutM f)
+    <=< transformBiM @_ @FieldPat @Pat (transformMutM f)
+
+instance Mutplate Match Name where
+  transformMutM f
+    = transformBiM @_ @Match @Pat (transformMutM f)
+    <=< transformBiM @_ @Match @Body (transformMutM f)
+    <=< transformBiM @_ @Match @Dec (transformMutM f)
+
+instance Mutplate Body Name where
+  transformMutM f
+    = transformBiM @_ @Body @Exp (transformMutM f)
+    <=< transformBiM @_ @Body @Guard (transformMutM f)
+
+instance Mutplate Guard Name where
+  transformMutM f
+    = transformBiM @_ @Guard @Exp (transformMutM f)
+    <=< transformBiM @_ @Guard @Stmt (transformMutM f)
+
+instance Mutplate Dec Name where
+  transformMutM f
+    = transformBiM @_ @Dec @Name (transformMutM f)
+    <=< transformBiM @_ @Dec @Pat (transformMutM f)
+    <=< transformBiM @_ @Dec @Body (transformMutM f)
+
+instance Mutplate Range Name where
+  transformMutM f
+    = transformBiM @_ @Range @Exp (transformMutM f)
+
+instance Mutplate FieldExp Name where
+  transformMutM f
+    = transformBiM @_ @FieldExp @Name (transformMutM f)
+    <=< transformBiM @_ @FieldExp @Exp (transformMutM f)
+
+instance Mutplate Stmt Name where
+  transformMutM f
+    = transformBiM @_ @Stmt @Pat (transformMutM f)
+    <=< transformBiM @_ @Stmt @Exp (transformMutM f)
+    <=< transformBiM @_ @Stmt @Dec (transformMutM f)
+
+instance Mutplate Type Name where
+  transformMutM f
+    = transformBiM @_ @Type @Name (transformMutM f)
