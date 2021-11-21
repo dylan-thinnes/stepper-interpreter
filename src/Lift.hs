@@ -125,10 +125,10 @@ modExpByKey :: (Exp -> Exp) -> ExpKey -> Exp -> Exp
 modExpByKey f key exp = runIdentity $ modExpByKeyA (Identity . f) key exp
 
 modPatByKeyA :: Applicative m => (Pat -> m Pat) -> PatKey -> Pat -> m Pat
-modPatByKeyA = adjustRecursive
+modPatByKeyA = adjustRecursiveA
 
 modExpByKeyA :: Applicative m => (Exp -> m Exp) -> ExpKey -> Exp -> m Exp
-modExpByKeyA = adjustRecursive
+modExpByKeyA = adjustRecursiveA
 
 dekeyed :: Functor f => f (Key f, a) -> f a
 dekeyed = fmap snd
@@ -140,9 +140,14 @@ embedK :: (R.Corecursive t, Keyed (R.Base t)) => R.Base t (Key (R.Base t), t) ->
 embedK = R.embed . dekeyed
 
 adjustRecursive
+  :: (R.Base t ~ f, Adjustable f, Traversable f, R.Corecursive t, R.Recursive t)
+  => (t -> t) -> [Key (R.Base t)] -> t -> t
+adjustRecursive f keys t = runIdentity $ adjustRecursiveA (Identity . f) keys t
+
+adjustRecursiveA
   :: (R.Base t ~ f, Adjustable f, Traversable f, R.Corecursive t, R.Recursive t, Applicative m)
   => (t -> m t) -> [Key (R.Base t)] -> t -> m t
-adjustRecursive f keys t = adjustRecursiveGA f adjust keys t
+adjustRecursiveA f keys t = adjustRecursiveGA f adjust keys t
 
 adjustRecursiveG
   :: (f ~ R.Base t, Traversable f, R.Corecursive t, R.Recursive t)

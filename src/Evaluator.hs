@@ -399,7 +399,7 @@ envExpAt topEnv topExp startingKey =
       in
       case key of
         [] -> Left (newEnv, exp)
-        head:rest -> adjustRecursive (\exp -> go newEnv exp rest) [head] exp
+        head:rest -> adjustRecursiveA (\exp -> go newEnv exp rest) [head] exp
 
 type EvaluateM = ReaderT (HaltReason -> HaltResponse) (Except String)
 
