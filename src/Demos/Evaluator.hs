@@ -105,6 +105,7 @@ prog = $(lift =<< [|
     Just y -> y
   |])
 
+  {-
 run :: Exp -> IO ()
 run exp = do
   printExp exp
@@ -119,3 +120,4 @@ run exp = do
     highlighted <- readProcess "/usr/bin/batcat" (words "--theme zenburn -l haskell -pp --color always -") source
     putStr highlighted
     getLine
+  -}
