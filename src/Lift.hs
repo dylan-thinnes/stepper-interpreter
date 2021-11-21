@@ -119,10 +119,10 @@ type PatKey = [Key PatF]
 type ExpKey = [Key ExpF]
 
 modPatByKey :: (Pat -> Pat) -> PatKey -> Pat -> Pat
-modPatByKey f key pat = runIdentity $ modPatByKeyA (Identity . f) key pat
+modPatByKey = adjustRecursive
 
 modExpByKey :: (Exp -> Exp) -> ExpKey -> Exp -> Exp
-modExpByKey f key exp = runIdentity $ modExpByKeyA (Identity . f) key exp
+modExpByKey = adjustRecursive
 
 modPatByKeyA :: Applicative m => (Pat -> m Pat) -> PatKey -> Pat -> m Pat
 modPatByKeyA = adjustRecursiveA
