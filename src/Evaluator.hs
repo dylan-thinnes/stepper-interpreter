@@ -17,7 +17,7 @@
 {-# LANGUAGE ViewPatterns #-}
 module Evaluator where
 
-import "base" Control.Monad (zipWithM)
+import "base" Control.Monad (zipWithM, ap)
 import "base" Data.Foldable (fold, toList)
 import "base" Data.Functor.Compose
 import "base" Data.Functor.Const
@@ -35,6 +35,9 @@ import           "containers" Data.Map (Map)
 import "data-fix" Data.Fix (Fix(..))
 
 import "keys" Data.Key (Key(..), Keyed(..), keyed, Adjustable(..))
+
+import "mtl" Control.Monad.Reader hiding (lift)
+import "mtl" Control.Monad.Except hiding (lift)
 
 import "pretty" Text.PrettyPrint.Annotated (renderSpans)
 
@@ -364,6 +367,12 @@ defaultEnvironment = mkEnvironment [('(+), plus), ('(*), times)]
 mkEnvironment :: [(Name, Declarable)] -> Environment
 mkEnvironment = M.fromList
 
+addNewEnvs :: Environment -> [Environment] -> Environment
+addNewEnvs env news = foldl updateEnv env news
+  where
+    updateEnv :: Environment -> Environment -> Environment
+    updateEnv env new = M.unionWith const new env
+
 defines :: Dec -> Environment
 defines = mkEnvironment . go
   where
@@ -374,238 +383,219 @@ defines = mkEnvironment . go
 lookupDefinition :: Name -> Environment -> Maybe Declarable
 lookupDefinition = M.lookup
 
-patExpToDec :: (Pat, Exp) -> Dec
-patExpToDec (pat, exp) = ValD pat (NormalB exp) []
+-- Find expression and in-scope environment at a path in an AST
+envExpAt :: Environment -> Exp -> ExpKey -> Maybe (Environment, Exp)
+envExpAt topEnv topExp startingKey =
+  case go topEnv topExp startingKey of
+    Left (env, exp) -> Just (env, exp)
+    Right _ -> Nothing
+  where
+    go env exp key =
+      let newEnv =
+            case exp of
+              LetE decs body -> addNewEnvs env $ defines <$> decs
+              _ -> env
+      in
+      case key of
+        [] -> Left (newEnv, exp)
+        head:rest -> adjustRecursive (\exp -> go newEnv exp rest) [head] exp
 
-redexOrderF :: Exp -> ExpKey
-redexOrderF (AppE func arg) = []
+-- Find declaration bound to a name at a point in the tree
+lookupNameAt :: Environment -> Exp -> Name -> ExpKey -> Maybe Declarable
+lookupNameAt topEnv topExp name key = do
+  (env, _) <- envExpAt topEnv topExp key
+  lookupDefinition name env
 
-emitLog :: Loggable m => String -> m ()
-emitLog = instantLog
+type EvaluateM = ReaderT (HaltReason -> HaltResponse) (Except String)
 
-substitute :: Monad m => Exp -> m ReductionResult
-substitute = return . NewlyReduced
+data HaltReason
+  = LookupVariable Name ExpKey
 
-nameUsedIn :: Exp -> Name -> Bool
-nameUsedIn exp name = name `elem` childrenBi exp -- todo: does not even remotely cover all uses
+data HaltResponse
+  = VariableFound Declarable
+  | VariableNotFound
 
-declLiveIn exp (FunD name _) = nameUsedIn exp name
-declLiveIn exp (ValD pat _ _) = any (nameUsedIn exp) (childrenBi pat)
-declLiveIn _ _ = error "declLiveIn: Unrecognized pattern"
+data ReductionResultF a
+  = CannotReduce { getRedRes :: a }
+  | NewlyReduced { getRedRes :: a }
+  deriving (Show, Functor)
+
+type ReductionResult = ReductionResultF Exp
+
+instance Applicative ReductionResultF where
+  pure = NewlyReduced
+  (<*>) (NewlyReduced f) (NewlyReduced a) = NewlyReduced $ f a
+  (<*>) (CannotReduce f) a                = CannotReduce $ f $ getRedRes a
+  (<*>) f                (CannotReduce a) = CannotReduce $ getRedRes f a
+
+evaluate :: Environment -> Exp -> Either String ReductionResult
+evaluate topEnv exp = runExcept $ runReaderT (reduce exp) haltHandler
+  where
+    haltHandler (LookupVariable name expKey) =
+      case lookupNameAt topEnv exp name expKey of
+        Nothing -> VariableNotFound
+        Just declarable -> VariableFound declarable
+
+fullyEvaluate :: Environment -> Exp -> Either String Exp
+fullyEvaluate env exp = do
+  reductionResult <- evaluate env exp
+  case reductionResult of
+    CannotReduce x -> pure x
+    NewlyReduced next -> fullyEvaluate env next
+
+halt :: HaltReason -> EvaluateM HaltResponse
+halt reason = asks ($ reason)
 
 letWrap :: [Dec] -> Exp -> Exp
 letWrap [] e = e
 letWrap xs e = LetE xs e
 
-toSubExpression :: (Monad m, Loggable m) => ExpKey -> Environment -> Exp -> m ReductionResult
-toSubExpression path env exp =
-  unwrapReductionT $ modExpByKeyA (ReductionT . handle env) path exp
+nameUsedIn :: Exp -> Name -> Bool
+nameUsedIn exp name = name `elem` childrenBi exp -- TODO: does not cover all uses, AT ALL (only checks Exp nodes)
 
-toSubExpressionEnv :: (Monad m, Loggable m) => Environment -> ExpKey -> Environment -> Exp -> m ReductionResult
-toSubExpressionEnv newEnv path env exp =
-  unwrapReductionT $ modExpByKeyA (ReductionT . handle (M.unionWith const newEnv env)) path exp
+isDeclLivingIn :: Exp -> Dec -> Bool
+isDeclLivingIn exp (FunD name _) = nameUsedIn exp name
+isDeclLivingIn exp (ValD pat _ _) = any (nameUsedIn exp) (childrenBi pat)
+isDeclLivingIn _ _ = error "isDeclLivingIn: Unrecognized pattern"
 
-data ReductionResultF a
-  = CannotReduce { unwrapReductionResult :: a }
-  | NewlyReduced { unwrapReductionResult :: a }
-  deriving (Show, Functor)
-
-isCannotReduce :: ReductionResultF a -> Bool
-isCannotReduce (CannotReduce _) = True
-isCannotReduce _ = False
-
-nr :: a -> ReductionResultF a
-nr = NewlyReduced
-
-type ReductionResult = ReductionResultF Exp
-newtype ReductionT m a = ReductionT { unwrapReductionT :: m (ReductionResultF a) }
-  deriving (Functor)
-
-instance Applicative ReductionResultF where
-  pure = NewlyReduced
-  (<*>) (CannotReduce mf) ma = CannotReduce $ mf (unwrapReductionResult ma)
-  (<*>) mf (CannotReduce ma) = CannotReduce $ unwrapReductionResult mf ma
-  (<*>) mf ma = NewlyReduced $ unwrapReductionResult mf (unwrapReductionResult ma)
-
-instance Applicative m => Applicative (ReductionT m) where
-  pure = ReductionT . pure . pure
-  (<*>) (ReductionT mf) (ReductionT ma) = ReductionT $ fmap (<*>) mf <*> ma
-
-instance Monad m => Monad (ReductionT m) where
-  ma >>= f = ReductionT $ do
-    rra <- unwrapReductionT ma
-    let a = case rra of
-              CannotReduce a -> a
-              NewlyReduced a -> a
-    unwrapReductionT $ f a
-
-handle :: forall m. (Monad m, Loggable m) => Environment -> Exp -> m ReductionResult
-handle env exp = go (projectK exp)
+reduce :: Exp -> EvaluateM ReductionResult
+reduce exp = match (keyed expf)
   where
-  go :: ExpF (Key ExpF, Exp) -> m ReductionResult
-  go (LetEF decls (bodyIdx, body)) =
-    let extractMatchingPat orig@(ValD pat (NormalB exp) _) -- TODO: handle guards
-          | VarP _ <- pat
-          = Left orig
-          | Right matches <- matchPatKeyed pat exp
-          = Right matches
-        extractMatchingPat orig = Left orig
+    Fix (Pair (Const path) expf) = annKeys exp
 
-        matchingPats :: [Either Dec MatchSuccess]
-        matchingPats = map extractMatchingPat decls
-    in
-    if any isRight matchingPats
-    then do
-      let explodedMatchingPats :: [Dec]
-          explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
-      emitLog "Exploding completed patterns in Let"
-      substitute (letWrap explodedMatchingPats body)
-    else
-      case filter (declLiveIn body) decls of -- TODO: circular definitions, so we can remove one-at-a-time
-        [] -> do
-          emitLog "Removing self"
-          substitute body
-        remainingDecls -> do
-          emitLog "Reducing LetBody"
-          toSubExpressionEnv (foldMap defines decls) [bodyIdx] env exp
-  go (CaseEF (_, LetE decls body) branches) = -- TODO: This is a workaround for let-scoping/closure-scoping issues
-    substitute (LetE decls (CaseE body branches))
-  go (CaseEF (targetIdx, target) branches) =
-    handleBranch 0
-    where
-    handleBranch ii
-      | ii >= length branches
-      = substitute $(lift =<< [e| error "Inexhaustive pattern match." |])
-      | otherwise
-      = let Match pat body decls = branches !! ii
-            NormalB expBody = body -- TODO: handle guards
-            explodeIntoLet boundVars =
-              letWrap (mapMaybe patExpPairToValDecl boundVars ++ decls) expBody
-        in
-        case matchPatKeyed pat target of
-          Right boundVars -> do
-            emitLog $ "Successfully matched branch " ++ show ii
-            substitute $ explodeIntoLet boundVars
-          Left (Mismatch (patKey, expKey)) -> do
-            emitLog ("Patterns don't match: " ++ show pat ++ ", " ++ show target)
-            emitLog ("Keys: " ++ show patKey ++ ", " ++ show expKey)
-            handleBranch (ii + 1)
-          Left (NeedsReduction (patKey, expKey)) -> do
-            emitLog "Case expression needs further reduction"
-            toSubExpression (targetIdx : expKey) env exp
-          Left (UnexpectedErrorMatch _ _) ->
-            error "Unexpected error in matching process - this should not happen!"
-  go (CondEF (condIdx, cond) (_, true) (_, false)) =
-    tryMatchBool True
-    where
-    tryMatchBool b =
-      let conName = if b then 'True else 'False
-          result = if b then true else false
+    reduceSubExp :: ExpKey -> EvaluateM ReductionResult
+    reduceSubExp path = getCompose $ modExpByKeyA (Compose . reduce) path exp
+
+    cannotReduce :: EvaluateM ReductionResult
+    cannotReduce = pure $ CannotReduce exp
+
+    lookupVar :: Name -> EvaluateM HaltResponse
+    lookupVar name = halt (LookupVariable name path)
+
+    match :: ExpF (Key ExpF, Fix (RecKey Exp)) -> EvaluateM ReductionResult
+
+    -- can't reduce literals
+    match (LitEF _) = cannotReduce
+
+    -- remove let statements when appropriate
+    match (LetEF decls (bodyIdx, body)) =
+      let extractMatchingPat orig@(ValD pat (NormalB exp) _) -- TODO: handle guards
+            | VarP _ <- pat
+            = Left orig
+            | Right matches <- matchPatKeyed pat exp
+            = Right matches
+          extractMatchingPat orig = Left orig
+
+          matchingPats :: [Either Dec MatchSuccess]
+          matchingPats = map extractMatchingPat decls
       in
-      case matchPatKeyed (ConP conName []) cond of
-        Right boundVars -> do
-          emitLog $ "CondE expression's condition is " ++ show b
-          substitute result
-        Left (Mismatch (patKey, expKey)) ->
-          if b
-            then tryMatchBool False
-            else error "CondE has mismatch with both False and True!"
-        Left (NeedsReduction (patKey, expKey)) -> do
-          emitLog "Cond's expression needs further reduction"
-          toSubExpression (condIdx : expKey) env exp
+      if any isRight matchingPats
+      then do
+        let explodedMatchingPats :: [Dec]
+            explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
+        pure $ NewlyReduced $ letWrap explodedMatchingPats (deann body)
+      else
+        case filter (isDeclLivingIn (deann body)) decls of -- TODO: circular definitions & other AST traversals, so we can remove one-at-a-time
+          [] -> do
+            pure $ NewlyReduced (deann body)
+          remainingDecls -> do
+            reduceSubExp [bodyIdx]
+
+    -- handle if statements
+    match (CondEF (condIdx, cond) (_, true) (_, false)) =
+      case matchPatKeyed (ConP 'True []) (deann cond) of
+        Right _ -> pure $ NewlyReduced $ deann true
+        Left (Mismatch _) -> pure $ NewlyReduced $ deann false
+        Left (NeedsReduction (patKey, expKey)) ->
+          reduceSubExp (condIdx : expKey)
         Left (UnexpectedErrorMatch _ _) ->
-          error "Unexpected error in matching process - this should not happen!"
-  go (LitEF _) = pure $ CannotReduce exp
-  go _
-    | FlattenedApps { func, args } <- flattenAppsKeyed (annKeys exp)
-    , VarE name <- deann func
-    , let (Fix (Pair (Const funcIdx) _)) = func
-    , definition <- maybe (error $ "variable lookup failed " ++ show name ++ "," ++ show (M.keys env)) id $ lookupDefinition name env -- TODO: handle failed lookup
-    , ValueDeclaration pat body wheres <- definition -- TODO: handle lookup for a function (probably means an error in flattenApps)
-    , NormalB bodyExp <- body -- TODO: handle guards
-    , VarP name <- pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
-    = substitute $ modExpByKey (const $ letWrap wheres bodyExp) funcIdx exp
-    | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys exp)
-    , VarE name <- deann func
-    , FunctionDeclaration definition <- maybe (error "function lookup failed") id $ lookupDefinition name env
-      -- TODO: handle failed lookup
-      -- TODO: when looked-up var is not a function
-    = let cardinality =
-            case definition of
-              CustomFD cardinality _ -> cardinality
-              ClausesFD (Clause pats _ _:_) -> length pats -- function definitions should have at least one clause
-          clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) Exp
-          clauseToHandler (Clause pats body wheres) args =
-            let NormalB expBody = body -- TODO: Handle guards
-                clauseMatches = zip [0..] $ zipWith matchPatKeyed pats args
-                go [] = Right []
-                go ((_, Right matches):rest) = (matches ++) <$> go rest
-                go ((i, Left err):rest) = Left (i, err)
-            in
-            case go clauseMatches of
-              Left err -> Left err
-              Right bindings -> Right $ letWrap (mapMaybe patExpPairToValDecl bindings ++ wheres) expBody -- TODO: Do where decls take precedence over arguments?
-          handlers =
-            case definition of
-              CustomFD _ handler -> [unCustomShow handler]
-              ClausesFD clauses -> map clauseToHandler clauses
-          headArgs, remainingArgs :: [Maybe Exp]
-          headArgs = take cardinality $ map (fmap deann) args
-          remainingArgs = take cardinality $ map (fmap deann) args
-          (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
-          runHandler ii =
-            if length handlers <= ii
-              then substitute $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add function name to error
-              else
-                let handler = handlers !! ii
+          throwError "CondE: Unexpected error in matching process - this should not happen!"
+
+    -- handle case statements
+    match (CaseEF (targetIdx, target) branches) =
+      foldr handleBranch noBranchesLeft (zip [0..] branches)
+      where
+      noBranchesLeft = pure $ NewlyReduced $(lift =<< [e| error "Inexhaustive pattern match." |])
+      handleBranch (ii, branch) tryNext
+        = let Match pat matchBody decls = branch
+              NormalB body = matchBody -- TODO: handle guards
+              explodeIntoLet boundVars =
+                letWrap (mapMaybe patExpPairToValDecl boundVars ++ decls) body
+          in
+          case matchPatKeyed pat (deann target) of
+            Right boundVars ->
+              pure $ NewlyReduced $ explodeIntoLet boundVars
+            Left (Mismatch (patKey, expKey)) ->
+              tryNext
+            Left (NeedsReduction (patKey, expKey)) ->
+              reduceSubExp (targetIdx : expKey)
+            Left (UnexpectedErrorMatch _ _) ->
+              error "Unexpected error in matching process - this should not happen!"
+
+    -- handle function application
+    match _
+      | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys exp)
+      , VarE name <- deann func
+      = do
+      declaration <- lookupVar name
+      case declaration of
+        -- TODO: handle failed lookup
+        -- TODO: handle when looked-up var is not a function
+        VariableNotFound -> undefined
+        VariableFound (ValueDeclaration pat body wheres) -> -- TODO: handle lookup of a lambda (probably means an error in flattenApps)
+          let Fix (Pair (Const funcIdx) _) = func
+              NormalB bodyExp = body -- TODO: handle guards
+              VarP name = pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
+          in
+          pure $ NewlyReduced $ modExpByKey (const $ letWrap wheres bodyExp) funcIdx exp
+        VariableFound (DataField pat exp) ->
+          error "reduce: Cannot handle data accessors yet"
+        VariableFound (FunctionDeclaration definition) ->
+          let cardinality :: Int
+              cardinality =
+                case definition of
+                  CustomFD cardinality _ -> cardinality
+                  ClausesFD (Clause pats _ _:_) -> length pats -- function definitions should have at least one clause
+
+              clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) Exp
+              clauseToHandler (Clause pats body wheres) args =
+                let NormalB expBody = body -- TODO: Handle guards
+                    clauseMatches = zip [0..] $ zipWith matchPatKeyed pats args
+                    go [] = Right []
+                    go ((_, Right matches):rest) = (matches ++) <$> go rest
+                    go ((i, Left err):rest) = Left (i, err)
                 in
+                case go clauseMatches of
+                  Left err -> Left err
+                  Right bindings -> Right $ letWrap (mapMaybe patExpPairToValDecl bindings ++ wheres) expBody -- TODO: Do where decls take precedence over arguments?
+
+              handlers :: [[Exp] -> Either (Int, MatchFailure) Exp]
+              handlers =
+                case definition of
+                  CustomFD _ handler -> [unCustomShow handler]
+                  ClausesFD clauses -> map clauseToHandler clauses
+
+              headArgs, remainingArgs :: [Maybe Exp]
+              headArgs = take cardinality $ map (fmap deann) args
+              remainingArgs = drop cardinality $ map (fmap deann) args
+
+              targetFunctionPath :: ExpKey
+              (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
+
+              inexhaustivePatternMatch = pure $ NewlyReduced $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add function name to error
+              runHandler (ii, handler) rest =
                 case handler (fromJust <$> headArgs) of
                   Left (argIdx, NeedsReduction (_, argSubPath)) -> do
-                    emitLog $ show argIdx ++ "th argument needs further reduction"
+                    --emitLog $ show argIdx ++ "th argument needs further reduction"
                     let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
-                    toSubExpression (path ++ argSubPath) env exp -- TODO: Do we need to handle CannotReduce?
+                    reduceSubExp (path ++ argSubPath) -- TODO: Do we need to handle CannotReduce?
                   Left (argIdx, Mismatch _) -> do
-                    emitLog $ show argIdx ++ "th clause did not match"
-                    runHandler (ii + 1)
+                    --emitLog $ show argIdx ++ "th clause did not match"
+                    rest
                   -- TODO: Handle other kinds of failure
-                  Right result -> substitute (modExpByKey (const result) targetFunctionPath exp)
-      in
-      if any isNothing headArgs
-        then error "not fully applied!" -- TODO: Handle partial application
-        else runHandler 0
-    | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys exp)
-    , ConE _ <- deann func
-    = let f i (Nothing:rest) = f (i + 1) rest
-          f i (Just (Fix (Pair (Const path) _)):rest) = do
-            reduction <- toSubExpression path env exp
-            case reduction of
-              CannotReduce _ -> f (i + 1) rest
-              NewlyReduced exp -> pure $ NewlyReduced exp
-          f _ [] = pure $ CannotReduce exp
-      in
-      f 0 args
-
-data InstantLog a = InstantLog (Maybe String) a
-  deriving (Show, Eq, Ord, Functor)
-
-instance Applicative InstantLog where
-  pure = InstantLog Nothing
-  (<*>) (InstantLog fMsg f) a = InstantLog fMsg (f $ runInstantLog a)
-
-instance Monad InstantLog where
-  (>>=) a f = f (runInstantLog a)
-  (>>) (InstantLog Nothing a) b = b
-  (>>) (InstantLog (Just msg) a) b = traceShow msg b
-
-runInstantLog (InstantLog Nothing a) = a
-runInstantLog (InstantLog (Just msg) a) = traceShow msg a
-
-class Loggable m where
-  instantLog :: String -> m ()
-
--- Make Identity ignore messages
-instance Loggable Identity where
-  instantLog msg = pure ()
-
-instance Loggable InstantLog where
-  instantLog msg = InstantLog (Just msg) ()
+                  Right result ->
+                    pure $ NewlyReduced $ modExpByKey (const result) targetFunctionPath exp
+          in
+          if any isNothing headArgs
+            then error "not fully applied!" -- TODO: Handle partial application
+            else foldr runHandler inexhaustivePatternMatch (zip [0..] handlers)
