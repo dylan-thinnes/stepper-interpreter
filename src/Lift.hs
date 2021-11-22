@@ -130,6 +130,9 @@ modPatByKeyA = adjustRecursiveA
 modExpByKeyA :: Applicative m => (Exp -> m Exp) -> ExpKey -> Exp -> m Exp
 modExpByKeyA = adjustRecursiveA
 
+modAnnExpByKeyA :: Applicative m => (Fix (RecKey Exp) -> m (Fix (RecKey Exp))) -> ExpKey -> Fix (RecKey Exp) -> m (Fix (RecKey Exp))
+modAnnExpByKeyA f = adjustRecursiveGA f (\f k (Pair cann ffix) -> Pair cann (adjust f k ffix))
+
 dekeyed :: Functor f => f (Key f, a) -> f a
 dekeyed = fmap snd
 
