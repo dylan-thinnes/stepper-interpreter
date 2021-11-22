@@ -626,12 +626,12 @@ reduce exp = match (keyed expf)
       -- handle constructor application
       | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys $ deann @Exp exp)
       , ConE _ <- deann func
-      = let f i (Nothing:rest) = f (i + 1) rest
-            f i (Just (Fix (Pair (Const path) _)):rest) = do
+      = let tryArg (i, Nothing) rest = rest
+            tryArg (i, Just (Fix (Pair (Const path) _))) rest = do
               reduction <- reduceSubExp path
               case reduction of
-                CannotReduce _ -> f (i + 1) rest
+                CannotReduce _ -> rest
                 NewlyReduced exp -> pure $ NewlyReduced exp
-            f _ [] = pure $ CannotReduce (deann exp)
+            finish = pure $ CannotReduce (deann exp)
         in
-        f 0 args
+        foldr tryArg finish (zip [0..] args)
