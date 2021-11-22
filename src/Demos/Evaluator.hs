@@ -122,6 +122,6 @@ run exp = do
     putStr $ "Error: " ++ err
   printExp (Right redRes) = do
     putStrLn "============"
-    let source = P.pprint $ P.removeBaseQualifications (getRedRes redRes)
+    let source = P.pprint $ P.cleanNames (getRedRes redRes)
     highlighted <- readProcess "/usr/bin/batcat" (words "--theme zenburn -l haskell -pp --color always -") source
     putStr highlighted

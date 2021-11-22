@@ -24,7 +24,7 @@ import "base" Data.Functor.Compose
 import "base" Data.Functor.Const
 import "base" Data.Functor.Product
 import "base" Data.Functor.Identity
-import "base" Data.Either (isRight)
+import "base" Data.Either (isRight, partitionEithers)
 import "base" Data.Maybe (isNothing, catMaybes, fromJust, mapMaybe)
 import "base" Data.Void
 import "base" Data.Data
@@ -442,9 +442,22 @@ evaluate topEnv exp = runExcept $ runReaderT (reduce $ annKeys exp) haltHandlers
             Nothing -> LookupVariableNotFound env targetNode
             Just definition -> LookupVariableFound definition
 
+-- TODO: This let-pruning has a bug: may misorder replacements
+-- e.g. let b = a; c = b in c => let c = b in c => b
 letWrap :: [Dec] -> Exp -> Exp
-letWrap [] e = e
-letWrap xs e = LetE xs e
+letWrap decls e =
+  let getSimplicity (ValD (VarP from) (NormalB (VarE to)) []) = Left (from, to)
+      getSimplicity decl = Right decl
+
+      (simpleDecls, complexDecls) = partitionEithers $ map getSimplicity decls
+
+      applySimpleDecl :: (Name, Name) -> Exp -> Exp
+      applySimpleDecl (from, to) exp = replaceName from to exp
+  in
+  case (simpleDecls, complexDecls) of
+    ([], []) -> e
+    ([], _) -> LetE complexDecls e
+    (_, _) -> foldr applySimpleDecl (letWrap complexDecls e) simpleDecls
 
 nameUsedIn :: Exp -> Name -> Bool
 nameUsedIn exp name = name `elem` collectNames exp -- TODO: does not cover all uses, AT ALL (only checks Exp nodes)

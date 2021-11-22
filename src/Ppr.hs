@@ -1,4 +1,6 @@
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -23,11 +25,13 @@ import Data.Ratio ( numerator, denominator )
 import Prelude hiding ((<>))
 
 import Data.Functor.Const
+import Data.Functor.Identity
 import Data.Functor.Product
 import Data.Fix
 import Data.Key (adjust, Key(..), Adjustable(..))
 import Data.Bifunctor (bimap)
 import Data.Generics.Uniplate.Data
+import qualified Data.Data as DD
 
 import qualified Data.Functor.Foldable as R
 import Lift
@@ -71,7 +75,7 @@ purple = (100,0,200)
 orange = (200,100,0)
 
 data Annotation = Annotation { color :: Color, info :: Maybe String }
-  deriving (Show)
+  deriving (Show, DD.Data)
 
 pprintColoured :: Ppr a => a -> String
 pprintColoured annexp = foldr colourSpan source spans
@@ -85,108 +89,24 @@ pprintColoured annexp = foldr colourSpan source spans
       pre ++ colorByANSI color text ++ post
 
 -- removing qualified names from base package for simpler pprinting
-class RemoveBaseQualifications a where
-  removeBaseQualifications :: a -> a
+cleanNames :: Mutplate from Name => from -> from
+cleanNames = transformAllNames (toStandalone . removeBaseQualifications)
+  where
+    -- remove mentions of common packages
+    removeBaseQualifications name
+      | (Name occName (NameG namespace pkgName modName)) <- name
+      , or
+          [ pkgName == PkgName "base"
+          , pkgName == PkgName "ghc-prim"
+          ]
+      = Name occName NameS
+      | otherwise
+      = name
 
-rbq :: RemoveBaseQualifications a => a -> a
-rbq = removeBaseQualifications
-
-instance RemoveBaseQualifications Name where
-  removeBaseQualifications name
-    | (Name occName (NameG namespace pkgName modName)) <- name
-    , or
-        [ pkgName == PkgName "base"
-        , pkgName == PkgName "ghc-prim"
-        ]
-    = Name occName NameS
-    | otherwise
-    = name
-
-instance RemoveBaseQualifications Exp where
-  removeBaseQualifications
-    = transformBi @Exp @Name rbq
-    . transformBi @Exp @Guard rbq
-    . transformBi @Exp @Pat rbq
-    . transformBi @Exp @Type rbq
-    . transformBi @Exp @Stmt rbq
-    . transformBi @Exp @FieldExp rbq
-    . transformBi @Exp @Match rbq
-    . transformBi @Exp @Range rbq
-    . transformBi @Exp @Dec rbq
-
-instance RemoveBaseQualifications AnnotatedExp where
-  removeBaseQualifications = R.hoist (\(Pair cmann expf) -> Pair cmann (rbqExpF expf))
-
-rbqExpF (VarEF name) = VarEF $ removeBaseQualifications name
-rbqExpF (ConEF name) = ConEF $ removeBaseQualifications name
-rbqExpF (RecConEF name fieldExps) = RecConEF (removeBaseQualifications name) fieldExps
-rbqExpF (UnboundVarEF name) = UnboundVarEF $ removeBaseQualifications name
-rbqExpF (CaseEF target branches) = CaseEF target (map removeBaseQualifications branches)
-rbqExpF expf = expf
-
-instance RemoveBaseQualifications Pat where
-  removeBaseQualifications
-    = transformBi @Pat @Name rbq
-    . transformBi @Pat @Exp rbq
-    . transformBi @Pat @FieldPat rbq
-
-instance RemoveBaseQualifications FieldPat where
-  removeBaseQualifications
-    = transformBi @FieldPat @Name rbq
-    . transformBi @FieldPat @Pat rbq
-
-instance RemoveBaseQualifications AnnotatedPat where
-  removeBaseQualifications = R.hoist (\(Pair cmann patf) -> Pair cmann (rbqPatF patf))
-
-rbqPatF (VarPF name) = VarPF $ removeBaseQualifications name
-rbqPatF (ConPF name pats) = ConPF (removeBaseQualifications name) pats
-rbqPatF (InfixPF l name r) = InfixPF l (removeBaseQualifications name) r
-rbqPatF (UInfixPF l name r) = UInfixPF l (removeBaseQualifications name) r
-rbqPatF (AsPF name subpat) = AsPF (removeBaseQualifications name) subpat
-rbqPatF (RecPF name fieldPats) = RecPF (removeBaseQualifications name) fieldPats
-rbqPatF patf = patf
-
-instance RemoveBaseQualifications Match where
-  removeBaseQualifications
-    = transformBi @Match @Pat rbq
-    . transformBi @Match @Body rbq
-    . transformBi @Match @Dec rbq
-
-instance RemoveBaseQualifications Body where
-  removeBaseQualifications
-    = transformBi @Body @Exp rbq
-    . transformBi @Body @Guard rbq
-
-instance RemoveBaseQualifications Guard where
-  removeBaseQualifications
-    = transformBi @Guard @Exp rbq
-    . transformBi @Guard @Stmt rbq
-
-instance RemoveBaseQualifications Dec where
-  removeBaseQualifications
-    = transformBi @Dec @Name rbq
-    . transformBi @Dec @Pat rbq
-    . transformBi @Dec @Body rbq
-    -- TODO: handle other dec constructors
-
-instance RemoveBaseQualifications Range where
-  removeBaseQualifications
-    = transformBi @Range @Exp rbq
-
-instance RemoveBaseQualifications FieldExp where
-  removeBaseQualifications
-    = transformBi @FieldExp @Name rbq
-    . transformBi @FieldExp @Exp rbq
-
-instance RemoveBaseQualifications Stmt where
-  removeBaseQualifications
-    = transformBi @Stmt @Pat rbq
-    . transformBi @Stmt @Exp rbq
-    . transformBi @Stmt @Dec rbq
-
-instance RemoveBaseQualifications Type where
-  removeBaseQualifications
-    = transformBi @Type @Name rbq
+    -- change local NameU to NameS, so as to remove many underscores
+    -- later, may want to preserve underscores as necessary by checking for unique names
+    toStandalone (Name occName (NameU _)) = Name occName NameS
+    toStandalone name = name
 
 -- document
 type Doc = Ppr.Lib.Doc Annotation

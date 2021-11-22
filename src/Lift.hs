@@ -232,6 +232,12 @@ toKeyPairDeann ann =
   in
   (key, R.embed $ fmap deann expf)
 
+transformAllNames :: Mutplate from Name => (Name -> Name) -> from -> from
+transformAllNames f = runIdentity . transformMutM (Identity . f)
+
+replaceName :: Mutplate from Name => Name -> Name -> from -> from
+replaceName from to = transformAllNames (\name -> if name == from then to else name)
+
 class Mutplate from to where
   transformMutM :: Monad m => (to -> m to) -> from -> m from
 
