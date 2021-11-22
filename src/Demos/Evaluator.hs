@@ -108,6 +108,7 @@ prog = $(lift =<< [|
 run :: Exp -> IO ()
 run exp = do
   printExp (Right $ NewlyReduced exp)
+  getLine
   mapM_ (\exp -> printExp exp >> getLine) reductionSteps
   where
   reductionSteps :: [Either String ReductionResult]
