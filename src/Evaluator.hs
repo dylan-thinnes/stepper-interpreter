@@ -429,7 +429,7 @@ instance Applicative ReductionResultF where
   (<*>) f                (CannotReduce a) = CannotReduce $ getRedRes f a
 
 evaluate :: Environment -> Exp -> Either String ReductionResult
-evaluate topEnv exp = runExcept $ runReaderT (reduce exp) haltHandler
+evaluate topEnv exp = runExcept $ runReaderT (reduce $ annKeys exp) haltHandler
   where
     haltHandler (LookupVariable name expKey) =
       case envExpAt topEnv exp expKey of
@@ -464,16 +464,29 @@ isDeclLivingIn exp (FunD name _) = nameUsedIn exp name
 isDeclLivingIn exp (ValD pat _ _) = any (nameUsedIn exp) (childrenBi pat)
 isDeclLivingIn _ _ = error "isDeclLivingIn: Unrecognized pattern"
 
-reduce :: Exp -> EvaluateM ReductionResult
+reduce :: Fix (RecKey Exp) -> EvaluateM ReductionResult
 reduce exp = match (keyed expf)
   where
-    Fix (Pair (Const path) expf) = annKeys exp
+    Fix (Pair (Const path) expf) = exp
+
+    modifySubExp :: (Fix (RecKey Exp) -> EvaluateM ReductionResult) -> ExpKey -> EvaluateM ReductionResult
+    modifySubExp modifier path =
+      getCompose $
+        adjustRecursiveGGA
+          (Compose . modifier)
+          (\(Pair cann ffix) -> ffix)
+          (\f k (Pair cann ffix) -> adjust f k ffix)
+          path
+          exp
 
     reduceSubExp :: ExpKey -> EvaluateM ReductionResult
-    reduceSubExp path = getCompose $ modExpByKeyA (Compose . reduce) path exp
+    reduceSubExp = modifySubExp reduce
+
+    replaceSubExp :: ExpKey -> Exp -> EvaluateM ReductionResult
+    replaceSubExp key exp = modifySubExp (const $ pure $ NewlyReduced exp) key
 
     cannotReduce :: EvaluateM ReductionResult
-    cannotReduce = pure $ CannotReduce exp
+    cannotReduce = pure $ CannotReduce $ deann exp
 
     lookupVar :: Name -> EvaluateM HaltResponse
     lookupVar name = halt (LookupVariable name path)
@@ -499,20 +512,20 @@ reduce exp = match (keyed expf)
       then do
         let explodedMatchingPats :: [Dec]
             explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
-        pure $ NewlyReduced $ letWrap explodedMatchingPats (deann body)
+        replaceSubExp [] $ letWrap explodedMatchingPats (deann body)
       else
         -- TODO: circular definitions & other AST traversals, so we can remove one-at-a-time
         let remainingDecls = filter (isDeclLivingIn (deann body)) decls
         in
         if length remainingDecls < length decls
-          then pure $ NewlyReduced $ letWrap remainingDecls (deann body)
+          then replaceSubExp [] $ letWrap remainingDecls (deann body)
           else reduceSubExp [bodyIdx]
 
     -- handle if statements
     match (CondEF (condIdx, cond) (_, true) (_, false)) =
       case matchPatKeyed (ConP 'True []) (deann cond) of
-        Right _ -> pure $ NewlyReduced $ deann true
-        Left (Mismatch _) -> pure $ NewlyReduced $ deann false
+        Right _ -> replaceSubExp [] $ deann true
+        Left (Mismatch _) -> replaceSubExp [] $ deann false
         Left (NeedsReduction (patKey, expKey)) ->
           reduceSubExp (condIdx : expKey)
         Left (UnexpectedErrorMatch _ _) ->
@@ -522,7 +535,7 @@ reduce exp = match (keyed expf)
     match (CaseEF (targetIdx, target) branches) =
       foldr handleBranch noBranchesLeft (zip [0..] branches)
       where
-      noBranchesLeft = pure $ NewlyReduced $(lift =<< [e| error "Inexhaustive pattern match." |])
+      noBranchesLeft = replaceSubExp [] $(lift =<< [e| error "Inexhaustive pattern match." |])
       handleBranch (ii, branch) tryNext
         = let Match pat matchBody decls = branch
               NormalB body = matchBody -- TODO: handle guards
@@ -531,7 +544,7 @@ reduce exp = match (keyed expf)
           in
           case matchPatKeyed pat (deann target) of
             Right boundVars ->
-              pure $ NewlyReduced $ explodeIntoLet boundVars
+              replaceSubExp [] $ explodeIntoLet boundVars
             Left (Mismatch (patKey, expKey)) ->
               tryNext
             Left (NeedsReduction (patKey, expKey)) ->
@@ -539,9 +552,9 @@ reduce exp = match (keyed expf)
             Left (UnexpectedErrorMatch _ _) ->
               error "Unexpected error in matching process - this should not happen!"
 
-    -- handle function application
     match _
-      | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys exp)
+      -- handle function application
+      | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys $ deann @Exp exp)
       , VarE name <- deann func
       = do
       declaration <- lookupVar name
@@ -549,15 +562,15 @@ reduce exp = match (keyed expf)
         -- TODO: handle failed lookup
         -- TODO: handle when looked-up var is not a function
         LookupVariableNodeMissing -> throwError $ "Couldn't find target node, this is a serious error, please contact." -- TODO: Classify error severity
-        LookupVariableNotFound env target -> throwError $ "Couldn't find function " ++ show name ++ "\n  at node: " ++ pprint target ++ "\n  in environment: " ++ show env
+        LookupVariableNotFound env target -> throwError $ "Couldn't find variable " ++ show name ++ "\n  at node: " ++ pprint target ++ "\n  in environment: " ++ show env
         LookupVariableFound (ValueDeclaration pat body wheres) -> -- TODO: handle lookup of a lambda (probably means an error in flattenApps)
           let Fix (Pair (Const funcIdx) _) = func
               NormalB bodyExp = body -- TODO: handle guards
               VarP name = pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
           in
-          pure $ NewlyReduced $ modExpByKey (const $ letWrap wheres bodyExp) funcIdx exp
+          replaceSubExp funcIdx $ letWrap wheres bodyExp
         LookupVariableFound (DataField pat exp) ->
-          error "reduce: Cannot handle data accessors yet"
+          throwError "reduce: Cannot handle data accessors yet"
         LookupVariableFound (FunctionDeclaration definition) ->
           let cardinality :: Int
               cardinality =
@@ -590,7 +603,7 @@ reduce exp = match (keyed expf)
               targetFunctionPath :: ExpKey
               (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
 
-              inexhaustivePatternMatch = pure $ NewlyReduced $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add function name to error
+              inexhaustivePatternMatch = replaceSubExp [] $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add function name to error
               runHandler (ii, handler) rest =
                 case handler (fromJust <$> headArgs) of
                   Left (argIdx, NeedsReduction (_, argSubPath)) -> do
@@ -602,7 +615,7 @@ reduce exp = match (keyed expf)
                     rest
                   -- TODO: Handle other kinds of failure
                   Right result ->
-                    pure $ NewlyReduced $ modExpByKey (const result) targetFunctionPath exp
+                    replaceSubExp targetFunctionPath result
           in
           if any isNothing headArgs
             then error "not fully applied!" -- TODO: Handle partial application

@@ -174,6 +174,28 @@ adjustRecursiveGA f adjust (k:rest) t =
     $ fmap pureWithWitness
     $ R.project t
 
+adjustRecursiveGGA
+  :: forall m t u f g k
+   . (f ~ R.Base t, g ~ R.Base u, Traversable g, R.Corecursive u, R.Recursive t, Applicative m)
+  => (t -> m u)
+  -> (forall a. f a -> g a)
+  -> (forall a. (a -> a) -> k -> f a -> g a)
+  -> [k] -> t -> m u
+adjustRecursiveGGA f reshape adjust [] t = f t
+adjustRecursiveGGA f reshape adjust (k:rest) t =
+  -- have to do these shenanigans because `adjust` can't change type inside container
+  let modifyWithWitness :: (m u, t) -> (m u, t)
+      modifyWithWitness (_, a) = (adjustRecursiveGGA f reshape adjust rest a, a)
+
+      pureWithWitness :: t -> (m u, t)
+      pureWithWitness a = (pure $ R.hoist reshape a, a)
+  in
+  fmap R.embed
+    $ sequenceA
+    $ fmap fst
+    $ adjust modifyWithWitness k
+    $ fmap pureWithWitness
+    $ R.project t
 
 listifyKey :: (a, b) -> ([a], b)
 listifyKey = first (\x -> [x])
