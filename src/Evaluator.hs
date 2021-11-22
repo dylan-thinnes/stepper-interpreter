@@ -442,13 +442,6 @@ evaluate topEnv exp = runExcept $ runReaderT (reduce $ annKeys exp) haltHandlers
             Nothing -> LookupVariableNotFound env targetNode
             Just definition -> LookupVariableFound definition
 
-fullyEvaluate :: Environment -> Exp -> Either String Exp
-fullyEvaluate env exp = do
-  reductionResult <- evaluate env exp
-  case reductionResult of
-    CannotReduce x -> pure x
-    NewlyReduced next -> fullyEvaluate env next
-
 letWrap :: [Dec] -> Exp -> Exp
 letWrap [] e = e
 letWrap xs e = LetE xs e
