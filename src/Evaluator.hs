@@ -405,11 +405,13 @@ type EvaluateM = ReaderT (HaltReason -> HaltResponse) (Except String)
 
 data HaltReason
   = LookupVariable Name ExpKey
+  deriving (Show)
 
 data HaltResponse
   = LookupVariableFound Declarable
   | LookupVariableNotFound Environment Exp
   | LookupVariableNodeMissing
+  deriving (Show)
 
 data ReductionResultF a
   = CannotReduce { getRedRes :: a }
