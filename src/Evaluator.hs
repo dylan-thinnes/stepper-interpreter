@@ -620,3 +620,16 @@ reduce exp = match (keyed expf)
           if any isNothing headArgs
             then error "not fully applied!" -- TODO: Handle partial application
             else foldr runHandler inexhaustivePatternMatch (zip [0..] handlers)
+
+      -- handle constructor application
+      | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys $ deann @Exp exp)
+      , ConE _ <- deann func
+      = let f i (Nothing:rest) = f (i + 1) rest
+            f i (Just (Fix (Pair (Const path) _)):rest) = do
+              reduction <- reduceSubExp path
+              case reduction of
+                CannotReduce _ -> f (i + 1) rest
+                NewlyReduced exp -> pure $ NewlyReduced exp
+            f _ [] = pure $ CannotReduce (deann exp)
+        in
+        f 0 args
