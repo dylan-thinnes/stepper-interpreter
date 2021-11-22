@@ -401,13 +401,13 @@ envExpAt topEnv topExp startingKey =
         [] -> Left (newEnv, exp)
         head:rest -> adjustRecursiveA (\exp -> go newEnv exp rest) [head] exp
 
-type EvaluateM = ReaderT (HaltReason -> HaltResponse) (Except String)
+type EvaluateM = ReaderT HaltHandlers (Except String)
 
-data HaltReason
-  = LookupVariable Name ExpKey
-  deriving (Show)
+data HaltHandlers = HaltHandlers
+  { lookupVariable :: Name -> ExpKey -> LookupVariableResponse
+  }
 
-data HaltResponse
+data LookupVariableResponse
   = LookupVariableFound Declarable
   | LookupVariableNotFound Environment Exp
   | LookupVariableNodeMissing
@@ -431,9 +431,10 @@ instance Applicative ReductionResultF where
   (<*>) f                (CannotReduce a) = CannotReduce $ getRedRes f a
 
 evaluate :: Environment -> Exp -> Either String ReductionResult
-evaluate topEnv exp = runExcept $ runReaderT (reduce $ annKeys exp) haltHandler
+evaluate topEnv exp = runExcept $ runReaderT (reduce $ annKeys exp) haltHandlers
   where
-    haltHandler (LookupVariable name expKey) =
+    haltHandlers = HaltHandlers { lookupVariable }
+    lookupVariable name expKey =
       case envExpAt topEnv exp expKey of
         Nothing -> LookupVariableNodeMissing
         Just (env, targetNode) ->
@@ -447,9 +448,6 @@ fullyEvaluate env exp = do
   case reductionResult of
     CannotReduce x -> pure x
     NewlyReduced next -> fullyEvaluate env next
-
-halt :: HaltReason -> EvaluateM HaltResponse
-halt reason = asks ($ reason)
 
 letWrap :: [Dec] -> Exp -> Exp
 letWrap [] e = e
@@ -490,8 +488,8 @@ reduce exp = match (keyed expf)
     cannotReduce :: EvaluateM ReductionResult
     cannotReduce = pure $ CannotReduce $ deann exp
 
-    lookupVar :: Name -> EvaluateM HaltResponse
-    lookupVar name = halt (LookupVariable name path)
+    lookupVar :: Name -> EvaluateM LookupVariableResponse
+    lookupVar name = asks $ \h -> lookupVariable h name path
 
     match :: ExpF (Key ExpF, Fix (RecKey Exp)) -> EvaluateM ReductionResult
 
