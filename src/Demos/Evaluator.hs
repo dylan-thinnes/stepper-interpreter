@@ -105,8 +105,29 @@ prog = $(lift =<< [|
     Just y -> y
   |])
 
-run :: Exp -> IO ()
-run exp = do
+runMapMaybe :: IO ()
+runMapMaybe = run' [d|
+  g 0 = Nothing
+  g x = Just (x * x)
+  mapMaybe f (x:rest) =
+    case f x of
+      Nothing -> mapMaybe f rest
+      Just y -> y : mapMaybe f rest
+  mapMaybe f [] = []
+  |] [|
+  mapMaybe g [1,0,2,0,3,0]
+  |]
+
+run' :: DecsQ -> ExpQ -> IO ()
+run' decsQ expQ = do
+  decs <- runQ decsQ
+  exp <- runQ expQ
+  run (envFromDecs decs) exp
+
+run :: Environment -> Exp -> IO ()
+run env exp = do
+  putStrLn "Starting environment:"
+  putStrLn (debugEnvironment env)
   printExp (Right $ NewlyReduced exp)
   getLine
   mapM_ (\exp -> printExp exp >> getLine) reductionSteps
@@ -115,7 +136,7 @@ run exp = do
   reductionSteps = takeWhile (either (const True) (not . isCannotReduce)) steps
 
   steps :: [Either String ReductionResult]
-  steps = iterate (\exp -> evaluate defaultEnvironment =<< fmap getRedRes exp) (evaluate defaultEnvironment exp)
+  steps = iterate (\exp -> evaluate env =<< fmap getRedRes exp) (evaluate env exp)
 
   printExp :: Either String ReductionResult -> IO ()
   printExp (Left err) =
