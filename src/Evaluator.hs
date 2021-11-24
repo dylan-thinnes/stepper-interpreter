@@ -325,8 +325,13 @@ patToIsListG extractPattern pat
 data Declarable
   = FunctionDeclaration FunctionDeclaration -- let f <1st clause>; f <2nd clause> ...
   | ValueDeclaration Pat Body [Dec] -- let <pat> = <body> where <...decs>
-  | DataField Pat Exp -- field for a datatype, e.g. MyDatatype { myField :: Int }
+  | DataField Pat Name -- field for a datatype, e.g. MyDatatype { myField :: Int }
   deriving (Show)
+
+debugDeclarable :: Declarable -> String
+debugDeclarable (FunctionDeclaration funDecl) = debugFunctionDeclaration funDecl
+debugDeclarable (ValueDeclaration pat body decs) = "Value: " ++ pprint (ValD pat body decs)
+debugDeclarable (DataField pat name) = concat ["DataField: field \"", pprint name, "\" in ", pprint pat]
 
 data FunctionDeclaration
   = ClausesFD [Clause]
@@ -338,6 +343,10 @@ data FunctionDeclaration
 data CustomShow a = CustomShow { msg :: String, unCustomShow :: a }
 instance Show (CustomShow a) where
   show (CustomShow msg _) = msg
+
+debugFunctionDeclaration :: FunctionDeclaration -> String
+debugFunctionDeclaration (ClausesFD clauses) = unlines ("Clauses Func: " : map (\clause -> "  " ++ pprint clause) clauses)
+debugFunctionDeclaration (CustomFD arity func) = concat ["Custom Func: ", show func, ", arity: ", show arity]
 
 -- TODO: Deal with environment clobbering names that are used repeatedly, i.e. let a = 1 in let a = a + 4 in a
 type Environment = Map Name Declarable
@@ -367,6 +376,11 @@ defaultEnvironment = mkEnvironment [('(+), plus), ('(*), times)]
 
 mkEnvironment :: [(Name, Declarable)] -> Environment
 mkEnvironment = M.fromList
+
+debugEnvironment :: Environment -> String
+debugEnvironment env = unlines $ map showKV $ M.toList env
+  where
+    showKV (key, value) = concat ["Name: ", show key, ", declaration: ", debugDeclarable value]
 
 addNewEnvs :: Environment -> [Environment] -> Environment
 addNewEnvs env news = foldl updateEnv env news
@@ -595,7 +609,7 @@ reduce exp = match (keyed expf)
         -- TODO: handle failed lookup
         -- TODO: handle when looked-up var is not a function
         LookupVariableNodeMissing -> throwError $ "Couldn't find target node, this is a serious error, please contact." -- TODO: Classify error severity
-        LookupVariableNotFound env target -> throwError $ "Couldn't find variable " ++ show name ++ "\n  at node: " ++ pprint target ++ "\n  in environment: " ++ show env
+        LookupVariableNotFound env target -> throwError $ "Couldn't find variable " ++ show name ++ "\n  at node: " ++ pprint target ++ "\n  in environment: " ++ debugEnvironment env
         LookupVariableFound (ValueDeclaration pat body wheres) -> -- TODO: handle lookup of a lambda (probably means an error in flattenApps)
           let Fix (Pair (Const funcIdx) _) = func
               NormalB bodyExp = body -- TODO: handle guards
