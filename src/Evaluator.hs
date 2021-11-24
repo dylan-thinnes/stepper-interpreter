@@ -84,7 +84,10 @@ type MatchMonad a = Either MatchFailure a
 type MatchResult = MatchMonad MatchSuccess
 
 matchPatKeyed :: Pat -> Exp -> MatchResult
-matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
+matchPatKeyed = matchPatKeyedConfigurable False
+
+matchPatKeyedConfigurable :: Bool -> Pat -> Exp -> MatchResult
+matchPatKeyedConfigurable goThroughLet pat exp = go (annKeys pat) (annKeys exp)
   where
     go :: Fix (RecKey Pat) -> Fix (RecKey Exp) -> MatchResult
     go annPat annExp = matchLists annPat annExp
@@ -187,8 +190,8 @@ matchPatKeyed pat exp = go (annKeys pat) (annKeys exp)
         match (ViewPF exp pat) _ = error "matchPatKeyed: Unsupported pat ViewP"
 
         -- TODO: How does matching through lets & other scope-affecting nodes work? Must consider.
-        -- Below enabled for demo purposes, not yet "stable"
-        match pat (LetEF _ exp) = go annPat exp
+        -- Ans: It messes with matching CONSIDERABLY, added flag to enable it in demos
+        match pat (LetEF _ exp) | goThroughLet = go annPat exp
 
         match pat exp
           -- TODO: Definitely unfinished cases here somewhere...
