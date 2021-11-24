@@ -11,6 +11,7 @@
 module Evaluator where
 
 import "base" Control.Monad (zipWithM, ap)
+import "base" Data.Char (isLower, isUpper)
 import "base" Data.Foldable (fold, toList)
 import "base" Data.Functor.Compose
 import "base" Data.Functor.Const
@@ -54,6 +55,10 @@ zipConcatM f as bs = concat <$> zipWithM f as bs
 
 updateList :: (a -> a) -> Int -> [a] -> [a]
 updateList f idx xs = map (\(i, x) -> if i == idx then f x else x) (zip [0..] xs)
+
+isVarName, isConName :: String -> Bool
+isVarName = not . isConName
+isConName raw = isUpper (head raw) || elem ':' raw
 
 -- ============================ PATTERN MATCHING
 
@@ -144,8 +149,8 @@ matchPatKeyedConfigurable goThroughLet pat exp = go (annKeys pat) (annKeys exp)
         match (ConPF patConName pats) _
           | FlattenedApps { func, args = margs } <- flattenAppsKeyed annExp
           , let args = catMaybes margs
-          , (ConE expConName) <- deann func
-          = if expConName /= patConName
+          , Just expConName <- conExpEnvName $ deann func
+          = if not $ expConName `interchangeable` FullName patConName
               then mismatch -- if constructors are different, assume that they belong to the same ADT & are mismatched
                             -- TODO: How does this interact with PatternSynonyms?
                    -- if the pattern & expression constructors come from different ADTS, we'd return: `unexpectedError "Pattern and expression have different constructor names."`
@@ -158,8 +163,8 @@ matchPatKeyedConfigurable goThroughLet pat exp = go (annKeys pat) (annKeys exp)
           | let pats = [patL, patR]
           , FlattenedApps { func, args = margs } <- flattenAppsKeyed annExp
           , let args = catMaybes margs
-          , (ConE expConName) <- deann func
-          = if expConName /= patConName
+          , Just expConName <- conExpEnvName $ deann func
+          = if not $ expConName `interchangeable` FullName patConName
               then mismatch -- if constructors are different, assume that they belong to the same ADT & are mismatched
                             -- TODO: How does this interact with PatternSynonyms?
                    -- if the pattern & expression constructors come from different ADTS, we'd return: `unexpectedError "Pattern and expression have different constructor names."`
@@ -191,7 +196,7 @@ matchPatKeyedConfigurable goThroughLet pat exp = go (annKeys pat) (annKeys exp)
         match pat exp
           -- TODO: Definitely unfinished cases here somewhere...
           | FlattenedApps { func } <- flattenAppsKeyed annExp
-          , (ConE _) <- deann func
+          , Just _ <- conExpEnvName $ deann func
           = mismatch
           | (ConP _ _) <- deann annPat -- May be too aggressive...
           = needsReduction
@@ -352,8 +357,16 @@ type Environment = Map EnvName Declarable
 data EnvName = RawName String | FullName Name
   deriving (Show, Eq, Ord)
 
+interchangeable :: EnvName -> EnvName -> Bool
+interchangeable (RawName raw) (FullName full) = extractRawName full == raw
+interchangeable (FullName full) (RawName raw) = extractRawName full == raw
+interchangeable n1 n2 = n1 == n2
+
+extractRawName :: Name -> String
+extractRawName (Name (OccName rawName) _) = rawName
+
 nameToFullAndRaw :: Name -> (EnvName, EnvName)
-nameToFullAndRaw fullName@(Name (OccName rawName) _) = (FullName fullName, RawName rawName)
+nameToFullAndRaw fullName = (FullName fullName, RawName $ extractRawName fullName)
 
 defaultEnvironment :: Environment
 defaultEnvironment = mkEnvironment [('(+), plus), ('(*), times)]
@@ -461,13 +474,13 @@ envExpAt topEnv topExp startingKey =
 type EvaluateM = ReaderT HaltHandlers (Except String)
 
 data HaltHandlers = HaltHandlers
-  { _lookupVariable :: Name -> ExpKey -> LookupVariableResponse
+  { _lookupVariable :: EnvName -> ExpKey -> LookupVariableResponse
   , _reduce :: ExpKey -> EvaluateM ReductionResult
   , _replace :: ExpKey -> Exp -> EvaluateM ReductionResult
   }
 
-lookupVariableAbsolute :: Name -> ExpKey -> EvaluateM LookupVariableResponse
-lookupVariableAbsolute name path = asks $ \f -> _lookupVariable f name path
+lookupVariableAbsolute :: EnvName -> ExpKey -> EvaluateM LookupVariableResponse
+lookupVariableAbsolute envName path = asks $ \f -> _lookupVariable f envName path
 
 reduceAbsolute :: ExpKey -> EvaluateM ReductionResult
 reduceAbsolute path = ask >>= \f -> _reduce f path
@@ -524,12 +537,12 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
     _replace :: ExpKey -> Exp -> EvaluateM ReductionResult
     _replace key exp = modifyExp (const $ pure $ NewlyReduced exp) key
 
-    _lookupVariable :: Name -> ExpKey -> LookupVariableResponse
-    _lookupVariable name expKey =
+    _lookupVariable :: EnvName -> ExpKey -> LookupVariableResponse
+    _lookupVariable envName expKey =
       case envExpAt topEnv topExp expKey of
         Nothing -> LookupVariableNodeMissing
         Just (env, targetNode) ->
-          case lookupDefinition name env of
+          case lookupDefinitionFullRaw envName env of
             Nothing -> LookupVariableNotFound env targetNode
             Just definition -> LookupVariableFound definition
 
@@ -537,8 +550,9 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
 -- e.g. let b = a; c = b in c => let c = b in c => b
 letWrap :: [Dec] -> Exp -> Exp
 letWrap decls e =
-  let getSimplicity (ValD (VarP from) (NormalB possiblyVarTo) [])
-        | Just to <- getVarExp possiblyVarTo = Left (from, to)
+  let getSimplicity :: Dec -> Either (Name, Name) Dec
+      getSimplicity (ValD (VarP from) (NormalB possiblyVarTo) [])
+        | Just to <- varExpName possiblyVarTo = Left (from, to)
       getSimplicity decl = Right decl
 
       (simpleDecls, complexDecls) = partitionEithers $ map getSimplicity decls
@@ -562,10 +576,27 @@ isDeclLivingIn exp (FunD name _) = nameUsedIn exp name
 isDeclLivingIn exp (ValD pat _ _) = any (nameUsedIn exp) (childrenBi pat)
 isDeclLivingIn _ _ = error "isDeclLivingIn: Unrecognized pattern"
 
-getVarExp :: Exp -> Maybe Name
-getVarExp (VarE name) = Just name
-getVarExp (UnboundVarE name) = Just name
-getVarExp _ = Nothing
+varExpName :: Exp -> Maybe Name
+varExpName (VarE name) = Just name
+varExpName (UnboundVarE name)
+  | isVarName (extractRawName name) = Just name
+varExpName _ = Nothing
+
+varExpEnvName :: Exp -> Maybe EnvName
+varExpEnvName (VarE name) = Just $ FullName name
+varExpEnvName (UnboundVarE name)
+  | let raw = extractRawName name
+  , isVarName raw
+  = Just $ RawName raw
+varExpEnvName _ = Nothing
+
+conExpEnvName :: Exp -> Maybe EnvName
+conExpEnvName (ConE name) = Just $ FullName name
+conExpEnvName (UnboundVarE name)
+  | let raw = extractRawName name
+  , isConName raw
+  = Just $ RawName raw
+conExpEnvName _ = Nothing
 
 reduce :: Fix (RecKey Exp) -> EvaluateM ReductionResult
 reduce exp = match (keyed expf)
@@ -584,8 +615,8 @@ reduce exp = match (keyed expf)
     reduceRelative :: ExpKey -> EvaluateM ReductionResult
     reduceRelative path = reduceAbsolute (globalPath ++ path)
 
-    lookupVariable :: Name -> EvaluateM LookupVariableResponse
-    lookupVariable name = lookupVariableAbsolute name globalPath
+    lookupVariable :: EnvName -> EvaluateM LookupVariableResponse
+    lookupVariable envName = lookupVariableAbsolute envName globalPath
 
     forcesViaCase :: Exp -> Maybe ExpKey
     forcesViaCase exp =
@@ -664,7 +695,7 @@ reduce exp = match (keyed expf)
     match _
       -- handle function application
       | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys $ deann @Exp exp)
-      , Just name <- getVarExp $ deann func
+      , Just name <- varExpEnvName $ deann func
       = do
       declaration <- lookupVariable name
       case declaration of
@@ -707,14 +738,15 @@ reduce exp = match (keyed expf)
               targetFunctionPath :: ExpKey
               (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
 
-              inexhaustivePatternMatch = replaceSelf $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add data constructor name to errors
+              inexhaustivePatternMatch = replaceSelf $(lift =<< [e| error "Inexhaustive pattern match in data " |]) -- TODO add data constructor name to errors
               runHandler (ii, handler) rest =
                 case handler (fromJust <$> headArgs) of
                   Left (argIdx, NeedsReduction (_, argSubPath)) -> do
                     --emitLog $ show argIdx ++ "th argument needs further reduction"
                     let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
                     reduceRelative (path ++ argSubPath) -- TODO: Do we need to handle CannotReduce?
-                  Left (argIdx, Mismatch _) -> do
+                  Left (argIdx, Mismatch mismatch) -> do
+                    traceShowM (headArgs, pat, argIdx, mismatch)
                     --emitLog $ show argIdx ++ "th clause did not match"
                     rest
                   -- TODO: Handle other kinds of failure
@@ -776,7 +808,7 @@ reduce exp = match (keyed expf)
 
       -- handle constructor application
       | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys $ deann @Exp exp)
-      , ConE _ <- deann func
+      , Just _ <- conExpEnvName $ deann func
       = let tryArg (i, Nothing) rest = rest
             tryArg (i, Just (Fix (Pair (Const path) _))) rest = do
               reduction <- reduceRelative path
