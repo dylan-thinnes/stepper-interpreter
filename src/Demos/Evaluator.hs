@@ -74,10 +74,10 @@ testMapMaybe :: Exp
 testMapMaybe = $(lift =<< [|
   let g 0 = Nothing
       g x = Just (x * x)
-      mapMaybe f (x:xs) =
+      mapMaybe f (x:rest) =
         case f x of
-          Nothing -> mapMaybe f xs
-          Just y -> y : mapMaybe f xs
+          Nothing -> mapMaybe f rest
+          Just y -> y : mapMaybe f rest
       mapMaybe f [] = []
   in
   mapMaybe g [1,0,2,0,3,0]

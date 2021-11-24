@@ -541,7 +541,20 @@ reduce exp = match (keyed expf)
     lookupVar :: Name -> EvaluateM LookupVariableResponse
     lookupVar name = lookupVariable name globalPath
 
+    forcesViaCase :: Exp -> Maybe ExpKey
+    forcesViaCase exp =
+      case projectK exp of
+        CaseEF (targetIdx, target) _ -> Just [targetIdx]
+        CondEF (targetIdx, target) _ _ -> Just [targetIdx]
+        _ -> Nothing
+
     match :: ExpF (Key ExpF, Fix (RecKey Exp)) -> EvaluateM ReductionResult
+
+    match _
+      | Just targetPath <- forcesViaCase (deann exp)
+      , Just (env, subexp) <- envExpAt defaultEnvironment (deann exp) targetPath
+      , LetE decs body <- subexp
+      = replaceSelf $ letWrap decs $ modExpByKey (const body) targetPath (deann exp)
 
     -- can't reduce literals
     match (LitEF _) = cannotReduce
