@@ -627,7 +627,6 @@ reduce exp = match (keyed expf)
             explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
         replaceSelf $ letWrap explodedMatchingPats (deann body)
       else
-        -- TODO: circular definitions & other AST traversals, so we can remove one-at-a-time
         let remainingDecls :: [Dec]
             remainingDecls = map snd $ filter isDeclLiving $ zip [0..] decls
 
