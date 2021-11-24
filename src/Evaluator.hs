@@ -52,6 +52,9 @@ import Debug.Trace
 zipConcatM :: Monad m => (a -> b -> m [c]) -> [a] -> [b] -> m [c]
 zipConcatM f as bs = concat <$> zipWithM f as bs
 
+updateList :: (a -> a) -> Int -> [a] -> [a]
+updateList f idx xs = map (\(i, x) -> if i == idx then f x else x) (zip [0..] xs)
+
 -- ============================ PATTERN MATCHING
 
 -- Extract bound names from a pattern, mainly useful for determining which
@@ -399,8 +402,25 @@ addNewEnvs env news = foldl updateEnv env news
 defines :: Dec -> Environment
 defines = mkEnvironment . go
   where
+  targetName = $(lift =<< newName "target")
+
   go (FunD name clauses) = [(name, FunctionDeclaration $ ClausesFD clauses)]
   go (ValD pat body wheres) = [(name, ValueDeclaration pat body wheres) | name <- patNames' pat]
+  go (DataD ctx name tyvars kind cons derivs) = concatMap definesCon cons
+    where
+      mkDataField size conName idx var =
+        let extractor =
+              ConP conName $ updateList (const (VarP targetName)) idx (replicate size WildP)
+        in
+        (var, DataField extractor targetName)
+      definesCon (RecC name varBangs) = do
+        (idx, (var, _, _)) <- zip [0..] varBangs
+        pure $ mkDataField (length varBangs) name idx var
+      definesCon (RecGadtC names varBangs finalType) = do
+        name <- names
+        (idx, (var, _, _)) <- zip [0..] varBangs
+        pure $ mkDataField (length varBangs) name idx var
+      definesCon _ = []
   go _ = []
 
 lookupDefinition :: Name -> Environment -> Maybe Declarable
@@ -658,8 +678,52 @@ reduce exp = match (keyed expf)
               VarP name = pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
           in
           replaceRelative funcIdx $ letWrap wheres bodyExp
-        LookupVariableFound (DataField pat exp) ->
-          throwError "reduce: Cannot handle data accessors yet"
+        LookupVariableFound (DataField pat name) ->
+          let cardinality :: Int
+              cardinality = 1
+
+              clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) Exp
+              clauseToHandler (Clause pats body wheres) args =
+                let NormalB expBody = body -- TODO: Handle guards
+                    clauseMatches = zip [0..] $ zipWith matchPatKeyed pats args
+                    go [] = Right []
+                    go ((_, Right matches):rest) = (matches ++) <$> go rest
+                    go ((i, Left err):rest) = Left (i, err)
+                in
+                case go clauseMatches of
+                  Left err -> Left err
+                  Right bindings -> Right $ letWrap (mapMaybe patExpPairToValDecl bindings ++ wheres) expBody -- TODO: Do where decls take precedence over arguments?
+
+              singleClause :: Clause
+              singleClause = Clause [pat] (NormalB $ VarE name) []
+
+              handlers :: [[Exp] -> Either (Int, MatchFailure) Exp]
+              handlers = [clauseToHandler singleClause]
+
+              headArgs, remainingArgs :: [Maybe Exp]
+              headArgs = take cardinality $ map (fmap deann) args
+              remainingArgs = drop cardinality $ map (fmap deann) args
+
+              targetFunctionPath :: ExpKey
+              (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
+
+              inexhaustivePatternMatch = replaceSelf $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add data constructor name to errors
+              runHandler (ii, handler) rest =
+                case handler (fromJust <$> headArgs) of
+                  Left (argIdx, NeedsReduction (_, argSubPath)) -> do
+                    --emitLog $ show argIdx ++ "th argument needs further reduction"
+                    let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
+                    reduceRelative (path ++ argSubPath) -- TODO: Do we need to handle CannotReduce?
+                  Left (argIdx, Mismatch _) -> do
+                    --emitLog $ show argIdx ++ "th clause did not match"
+                    rest
+                  -- TODO: Handle other kinds of failure
+                  Right result ->
+                    replaceRelative targetFunctionPath result
+          in
+          if any isNothing headArgs
+            then error "not fully applied!" -- TODO: Handle partial application
+            else foldr runHandler inexhaustivePatternMatch (zip [0..] handlers)
         LookupVariableFound (FunctionDeclaration definition) ->
           let cardinality :: Int
               cardinality =
