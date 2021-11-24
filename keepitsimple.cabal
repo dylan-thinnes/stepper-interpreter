@@ -24,7 +24,6 @@ extra-source-files: CHANGELOG.md
 library
     exposed-modules:
         Evaluator,
-        Indexing,
         Lift,
         Ppr,
         Ppr.Lib,
@@ -39,14 +38,11 @@ library
     -- other-extensions:
     build-depends:
         base ^>=4.14.2.0,
-        adjunctions,
         containers,
         data-fix,
         deriving-compat,
-        distributive,
         ghc-boot-th,
         keys,
-        lens,
         mtl,
         pretty,
         process,
