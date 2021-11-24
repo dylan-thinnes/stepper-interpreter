@@ -127,6 +127,18 @@ runMapMaybe = run' [d|
   exp = mapMaybe g [1,0,2,0,3,0]
   |]
 
+runCircularPruning :: IO ()
+runCircularPruning = run' [d|
+  exp =
+    let x = 1 + y
+        y = 2 + x
+        z = 17 -- This should die, because it isn't used
+        w = w -- This should die, because it doesn't refer to itself
+        t = 7 + t -- This should die, because it refers to itself, but nothing refers to it
+    in
+    x
+  |]
+
 run' :: DecsQ -> IO ()
 run' decsQ = do
   decs <- runQ decsQ
