@@ -45,14 +45,14 @@ library
         deriving-compat,
         distributive,
         ghc-boot-th,
-        lens,
         keys,
+        lens,
+        mtl,
         pretty,
         process,
         recursion-schemes,
         template-haskell,
         uniplate,
-        mtl
 
     hs-source-dirs:   src
     default-language: Haskell2010

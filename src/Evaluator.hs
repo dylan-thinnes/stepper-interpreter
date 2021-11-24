@@ -1,21 +1,13 @@
 {-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveLift #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE ImportQualifiedPost #-}
-{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveTraversable #-}
-{-# LANGUAGE ViewPatterns #-}
 module Evaluator where
 
 import "base" Control.Monad (zipWithM, ap)
