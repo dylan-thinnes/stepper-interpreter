@@ -114,15 +114,15 @@ runMapMaybe = run' [d|
       Nothing -> mapMaybe f rest
       Just y -> y : mapMaybe f rest
   mapMaybe f [] = []
-  |] [|
-  mapMaybe g [1,0,2,0,3,0]
+  exp = mapMaybe g [1,0,2,0,3,0]
   |]
 
-run' :: DecsQ -> ExpQ -> IO ()
-run' decsQ expQ = do
+run' :: DecsQ -> IO ()
+run' decsQ = do
   decs <- runQ decsQ
-  exp <- runQ expQ
-  run (envFromDecs decs) exp
+  let env = envFromDecs decs
+  let Just (ValueDeclaration _ (NormalB exp) _) = lookupDefinitionRaw "exp" env
+  run env exp
 
 run :: Environment -> Exp -> IO ()
 run env exp = do

@@ -407,10 +407,16 @@ lookupDefinition :: Name -> Environment -> Maybe Declarable
 lookupDefinition name env =
   let (fullName, rawName) = nameToFullAndRaw name
   in
-  case (M.lookup fullName env, M.lookup rawName env) of
+  case (lookupDefinitionFullRaw fullName env, lookupDefinitionFullRaw rawName env) of
     (Just decl, _) -> Just decl
     (_, Just decl) -> Just decl
     _ -> Nothing
+
+lookupDefinitionFullRaw :: EnvName -> Environment -> Maybe Declarable
+lookupDefinitionFullRaw = M.lookup
+
+lookupDefinitionRaw :: String -> Environment -> Maybe Declarable
+lookupDefinitionRaw raw = lookupDefinitionFullRaw (RawName raw)
 
 envFromDecs :: [Dec] -> Environment
 envFromDecs decs = addNewEnvs defaultEnvironment (map defines decs)
