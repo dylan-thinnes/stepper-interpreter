@@ -436,18 +436,18 @@ type EvaluateM = ReaderT HaltHandlers (Except String)
 
 data HaltHandlers = HaltHandlers
   { _lookupVariable :: Name -> ExpKey -> LookupVariableResponse
-  , _reduceAbsolute :: ExpKey -> EvaluateM ReductionResult
-  , _replaceAbsolute :: ExpKey -> Exp -> EvaluateM ReductionResult
+  , _reduce :: ExpKey -> EvaluateM ReductionResult
+  , _replace :: ExpKey -> Exp -> EvaluateM ReductionResult
   }
 
-lookupVariable :: Name -> ExpKey -> EvaluateM LookupVariableResponse
-lookupVariable name path = asks $ \f -> _lookupVariable f name path
+lookupVariableAbsolute :: Name -> ExpKey -> EvaluateM LookupVariableResponse
+lookupVariableAbsolute name path = asks $ \f -> _lookupVariable f name path
 
 reduceAbsolute :: ExpKey -> EvaluateM ReductionResult
-reduceAbsolute path = ask >>= \f -> _reduceAbsolute f path
+reduceAbsolute path = ask >>= \f -> _reduce f path
 
 replaceAbsolute :: ExpKey -> Exp -> EvaluateM ReductionResult
-replaceAbsolute path exp = ask >>= \f -> _replaceAbsolute f path exp
+replaceAbsolute path exp = ask >>= \f -> _replace f path exp
 
 data LookupVariableResponse
   = LookupVariableFound Declarable
@@ -477,10 +477,10 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
   where
     annotated = annKeys topExp
 
-    haltHandlers = HaltHandlers { _lookupVariable, _reduceAbsolute, _replaceAbsolute }
+    haltHandlers = HaltHandlers { _lookupVariable, _reduce, _replace }
 
-    _reduceAbsolute :: ExpKey -> EvaluateM ReductionResult
-    _reduceAbsolute key =
+    _reduce :: ExpKey -> EvaluateM ReductionResult
+    _reduce key =
       case modAnnExpByKeyA Left key annotated of
         Left targetNode -> reduce targetNode
         Right _ -> throwError $ "Error: Couldn't find index: " ++ show key
@@ -495,8 +495,8 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
           path
           annotated
 
-    _replaceAbsolute :: ExpKey -> Exp -> EvaluateM ReductionResult
-    _replaceAbsolute key exp = modifyExp (const $ pure $ NewlyReduced exp) key
+    _replace :: ExpKey -> Exp -> EvaluateM ReductionResult
+    _replace key exp = modifyExp (const $ pure $ NewlyReduced exp) key
 
     _lookupVariable :: Name -> ExpKey -> LookupVariableResponse
     _lookupVariable name expKey =
@@ -558,8 +558,8 @@ reduce exp = match (keyed expf)
     reduceRelative :: ExpKey -> EvaluateM ReductionResult
     reduceRelative path = reduceAbsolute (globalPath ++ path)
 
-    lookupVar :: Name -> EvaluateM LookupVariableResponse
-    lookupVar name = lookupVariable name globalPath
+    lookupVariable :: Name -> EvaluateM LookupVariableResponse
+    lookupVariable name = lookupVariableAbsolute name globalPath
 
     forcesViaCase :: Exp -> Maybe ExpKey
     forcesViaCase exp =
@@ -640,7 +640,7 @@ reduce exp = match (keyed expf)
       | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys $ deann @Exp exp)
       , Just name <- getVarExp $ deann func
       = do
-      declaration <- lookupVar name
+      declaration <- lookupVariable name
       case declaration of
         -- TODO: handle failed lookup
         -- TODO: handle when looked-up var is not a function
