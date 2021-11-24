@@ -696,3 +696,5 @@ reduce exp = match (keyed expf)
             finish = pure $ CannotReduce (deann exp)
         in
         foldr tryArg finish (zip [0..] args)
+
+    match _ = error $ "reduce: Can't match " ++ pprint (deann @Exp exp) ++ ", AST: " ++ show (deann @Exp exp)
