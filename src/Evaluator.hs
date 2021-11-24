@@ -43,7 +43,7 @@ import "mtl" Control.Monad.Except hiding (lift)
 import "pretty" Text.PrettyPrint.Annotated (renderSpans)
 
 import "template-haskell" Language.Haskell.TH
-import "template-haskell" Language.Haskell.TH.Syntax (Lift(..), Name(..), NameFlavour(..))
+import "template-haskell" Language.Haskell.TH.Syntax (Lift(..), Name(..), NameFlavour(..), OccName(..))
 
 import "uniplate" Data.Generics.Uniplate.Data
 
@@ -352,7 +352,13 @@ debugFunctionDeclaration (ClausesFD clauses) = unlines ("Clauses Func: " : map (
 debugFunctionDeclaration (CustomFD arity func) = concat ["Custom Func: ", show func, ", arity: ", show arity]
 
 -- TODO: Deal with environment clobbering names that are used repeatedly, i.e. let a = 1 in let a = a + 4 in a
-type Environment = Map Name Declarable
+type Environment = Map EnvName Declarable
+
+data EnvName = RawName String | FullName Name
+  deriving (Show, Eq, Ord)
+
+nameToFullAndRaw :: Name -> (EnvName, EnvName)
+nameToFullAndRaw fullName@(Name (OccName rawName) _) = (FullName fullName, RawName rawName)
 
 defaultEnvironment :: Environment
 defaultEnvironment = mkEnvironment [('(+), plus), ('(*), times)]
@@ -378,7 +384,14 @@ defaultEnvironment = mkEnvironment [('(+), plus), ('(*), times)]
         handler _ _ = Left (0, NeedsReduction ([], []))
 
 mkEnvironment :: [(Name, Declarable)] -> Environment
-mkEnvironment = M.fromList
+mkEnvironment = M.fromList . concatMap toRawFull
+  where
+    toRawFull (name, declarable) =
+      let (fullName, rawName) = nameToFullAndRaw name
+      in
+      [(fullName, declarable)
+      ,(rawName, declarable)
+      ]
 
 debugEnvironment :: Environment -> String
 debugEnvironment env = unlines $ map showKV $ M.toList env
@@ -399,7 +412,16 @@ defines = mkEnvironment . go
   go _ = []
 
 lookupDefinition :: Name -> Environment -> Maybe Declarable
-lookupDefinition = M.lookup
+lookupDefinition name env =
+  let (fullName, rawName) = nameToFullAndRaw name
+  in
+  case (M.lookup fullName env, M.lookup rawName env) of
+    (Just decl, _) -> Just decl
+    (_, Just decl) -> Just decl
+    _ -> Nothing
+
+envFromDecs :: [Dec] -> Environment
+envFromDecs decs = addNewEnvs defaultEnvironment (map defines decs)
 
 -- Find expression and in-scope environment at a path in an AST
 envExpAt :: Environment -> Exp -> ExpKey -> Maybe (Environment, Exp)
@@ -497,7 +519,8 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
 -- e.g. let b = a; c = b in c => let c = b in c => b
 letWrap :: [Dec] -> Exp -> Exp
 letWrap decls e =
-  let getSimplicity (ValD (VarP from) (NormalB (VarE to)) []) = Left (from, to)
+  let getSimplicity (ValD (VarP from) (NormalB possiblyVarTo) [])
+        | Just to <- getVarExp possiblyVarTo = Left (from, to)
       getSimplicity decl = Right decl
 
       (simpleDecls, complexDecls) = partitionEithers $ map getSimplicity decls
@@ -520,6 +543,11 @@ isDeclLivingIn :: Exp -> Dec -> Bool
 isDeclLivingIn exp (FunD name _) = nameUsedIn exp name
 isDeclLivingIn exp (ValD pat _ _) = any (nameUsedIn exp) (childrenBi pat)
 isDeclLivingIn _ _ = error "isDeclLivingIn: Unrecognized pattern"
+
+getVarExp :: Exp -> Maybe Name
+getVarExp (VarE name) = Just name
+getVarExp (UnboundVarE name) = Just name
+getVarExp _ = Nothing
 
 reduce :: Fix (RecKey Exp) -> EvaluateM ReductionResult
 reduce exp = match (keyed expf)
@@ -618,7 +646,7 @@ reduce exp = match (keyed expf)
     match _
       -- handle function application
       | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys $ deann @Exp exp)
-      , VarE name <- deann func
+      , Just name <- getVarExp $ deann func
       = do
       declaration <- lookupVar name
       case declaration of
