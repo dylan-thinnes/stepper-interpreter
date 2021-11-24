@@ -671,7 +671,7 @@ reduce exp = match (keyed expf)
         -- TODO: handle failed lookup
         -- TODO: handle when looked-up var is not a function
         LookupVariableNodeMissing -> throwError $ "Couldn't find target node, this is a serious error, please contact." -- TODO: Classify error severity
-        LookupVariableNotFound env target -> throwError $ "Couldn't find variable " ++ show name ++ "\n  at node: " ++ pprint target ++ "\n  in environment: " ++ debugEnvironment env
+        LookupVariableNotFound env target -> throwError $ "Couldn't find variable " ++ show name ++ "\n  at node: " ++ pprint target ++ "\n  rep: " ++ show target ++ "\n  in environment: " ++ debugEnvironment env
         LookupVariableFound (ValueDeclaration pat body wheres) -> -- TODO: handle lookup of a lambda (probably means an error in flattenApps)
           let Fix (Pair (Const funcIdx) _) = func
               NormalB bodyExp = body -- TODO: handle guards
