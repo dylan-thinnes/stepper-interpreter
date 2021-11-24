@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DeriveLift #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -54,6 +55,9 @@ zipConcatM f as bs = concat <$> zipWithM f as bs
 
 updateList :: (a -> a) -> Int -> [a] -> [a]
 updateList f idx xs = map (\(i, x) -> if i == idx then f x else x) (zip [0..] xs)
+
+removeList :: Int -> [a] -> [a]
+removeList idx xs = concatMap (\(i, x) -> if i == idx then [] else [x]) (zip [0..] xs)
 
 -- ============================ PATTERN MATCHING
 
@@ -551,13 +555,13 @@ letWrap decls e =
     ([], _) -> LetE complexDecls e
     (_, _) -> foldr applySimpleDecl (letWrap complexDecls e) simpleDecls
 
-nameUsedIn :: Exp -> Name -> Bool
-nameUsedIn exp name = name `elem` collectNames exp -- TODO: does not cover all uses, AT ALL (only checks Exp nodes)
+nameUsedIn :: forall from. Mutplate from Name => from -> Name -> Bool
+nameUsedIn exp name = name `elem` collectNames exp
   where
-    collectNames :: Exp -> [Name]
-    collectNames = fst . transformMutM @Exp @Name (\x -> ([x], x))
+    collectNames :: from -> [Name]
+    collectNames = fst . transformMutM @from @Name (\x -> ([x], x))
 
-isDeclLivingIn :: Exp -> Dec -> Bool
+isDeclLivingIn :: forall from. Mutplate from Name => from -> Dec -> Bool
 isDeclLivingIn exp (FunD name _) = nameUsedIn exp name
 isDeclLivingIn exp (ValD pat _ _) = any (nameUsedIn exp) (childrenBi pat)
 isDeclLivingIn _ _ = error "isDeclLivingIn: Unrecognized pattern"
@@ -624,7 +628,21 @@ reduce exp = match (keyed expf)
         replaceSelf $ letWrap explodedMatchingPats (deann body)
       else
         -- TODO: circular definitions & other AST traversals, so we can remove one-at-a-time
-        let remainingDecls = filter (isDeclLivingIn (deann body)) decls
+        let remainingDecls :: [Dec]
+            remainingDecls = map snd $ filter isDeclLiving $ zip [0..] decls
+
+            isDeclLiving :: (Int, Dec) -> Bool
+            isDeclLiving (idx, decl) =
+              let livesInBody = isDeclLivingIn (deann @Exp body) decl
+                  nonSelfDecls = removeList idx decls
+                  livesInOtherDecls = any (isDeclInDec decl) nonSelfDecls
+              in
+              livesInBody || livesInOtherDecls
+
+            isDeclInDec :: Dec -> Dec -> Bool
+            isDeclInDec decl (ValD _ body decs) = isDeclLivingIn body decl || any (`isDeclLivingIn` decl) decs
+            isDeclInDec decl (FunD _ clauses) = any (`isDeclLivingIn` decl) clauses
+            isDeclInDec decl _ = False
         in
         if length remainingDecls < length decls
           then replaceSelf $ letWrap remainingDecls (deann body)

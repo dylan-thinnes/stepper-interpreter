@@ -321,6 +321,7 @@ instance Mutplate Dec Name where
     = transformBiM @_ @Dec @Name (transformMutM f)
     <=< transformBiM @_ @Dec @Pat (transformMutM f)
     <=< transformBiM @_ @Dec @Body (transformMutM f)
+    <=< transformBiM @_ @Dec @Clause (transformMutM f)
 
 instance Mutplate Range Name where
   transformMutM f
@@ -340,3 +341,9 @@ instance Mutplate Stmt Name where
 instance Mutplate Type Name where
   transformMutM f
     = transformBiM @_ @Type @Name (transformMutM f)
+
+instance Mutplate Clause Name where
+  transformMutM f
+    = transformBiM @_ @Clause @Pat (transformMutM f)
+    <=< transformBiM @_ @Clause @Body (transformMutM f)
+    <=< transformBiM @_ @Clause @Dec (transformMutM f)
