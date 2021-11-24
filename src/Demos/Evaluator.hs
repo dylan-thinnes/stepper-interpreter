@@ -105,6 +105,16 @@ prog = $(lift =<< [|
     Just y -> y
   |])
 
+runDataField :: IO ()
+runDataField = run' [d|
+  data MyData = X { a :: Int, b :: Int } | Y { c :: Int }
+  exp =
+    let x = X 1 2
+        y = Y 3
+    in
+    a x + b x + c y
+  |]
+
 runMapMaybe :: IO ()
 runMapMaybe = run' [d|
   g 0 = Nothing
