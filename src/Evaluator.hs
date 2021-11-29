@@ -558,10 +558,10 @@ letWrap decls e =
     (_, _) -> foldr applySimpleDecl (letWrap complexDecls e) simpleDecls
 
 nameUsedIn :: forall from. Mutplate from Name => from -> Name -> Bool
-nameUsedIn exp name = name `elem` collectNames exp
-  where
-    collectNames :: from -> [Name]
-    collectNames = fst . transformMutM @from @Name (\x -> ([x], x))
+nameUsedIn exp name = name `elem` collectNames @from exp
+
+collectNames :: forall from. Mutplate from Name => from -> [Name]
+collectNames = fst . transformMutM @from @Name (\x -> ([x], x))
 
 isDeclLivingIn :: forall from. Mutplate from Name => from -> Dec -> Bool
 isDeclLivingIn exp (FunD name _) = nameUsedIn exp name
