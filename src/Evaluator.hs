@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DeriveLift #-}
 {-# LANGUAGE ImportQualifiedPost #-}
@@ -13,6 +14,7 @@ module Evaluator where
 
 import "base" Control.Monad (zipWithM, ap)
 import "base" Data.Foldable (fold, toList)
+import "base" Data.Function ((&))
 import "base" Data.Functor.Compose
 import "base" Data.Functor.Const
 import "base" Data.Functor.Product
@@ -26,11 +28,13 @@ import "base" GHC.Generics
 import qualified "containers" Data.Map as M
 import           "containers" Data.Map (Map)
 
+import "data-hash" Data.Hash qualified as Hash
+
 import "data-fix" Data.Fix (Fix(..))
 
-import "hashable" Data.Hashable
-
 import "keys" Data.Key (Key(..), Keyed(..), keyed, Adjustable(..))
+
+import "lens" Control.Lens qualified as L
 
 import "mtl" Control.Monad.Reader hiding (lift)
 import "mtl" Control.Monad.Except hiding (lift)
@@ -443,6 +447,9 @@ lookupDefinition name env =
 lookupDefinitionFullRaw :: EnvName -> Environment -> Maybe Declarable
 lookupDefinitionFullRaw = M.lookup
 
+lookupDefinitionFullOnly :: Name -> Environment -> Maybe Declarable
+lookupDefinitionFullOnly name = lookupDefinitionFullRaw (FullName name)
+
 lookupDefinitionRaw :: String -> Environment -> Maybe Declarable
 lookupDefinitionRaw raw = lookupDefinitionFullRaw (RawName raw)
 
@@ -472,6 +479,7 @@ data HaltHandlers = HaltHandlers
   { _lookupVariable :: Name -> ExpKey -> LookupVariableResponse
   , _reduce :: ExpKey -> EvaluateM ReductionResult
   , _replace :: ExpKey -> Exp -> EvaluateM ReductionResult
+  , _makeUniqueName :: ExpKey -> Name -> Name
   }
 
 lookupVariableAbsolute :: Name -> ExpKey -> EvaluateM LookupVariableResponse
@@ -482,6 +490,12 @@ reduceAbsolute path = ask >>= \f -> _reduce f path
 
 replaceAbsolute :: ExpKey -> Exp -> EvaluateM ReductionResult
 replaceAbsolute path exp = ask >>= \f -> _replace f path exp
+
+makeUniqueNameAbsolute :: ExpKey -> Name -> EvaluateM Name
+makeUniqueNameAbsolute path name = asks $ \f -> _makeUniqueName f path name
+
+makeUniqueNamesAbsolute :: Mutplate from Name => ExpKey -> from -> EvaluateM from
+makeUniqueNamesAbsolute path = transformMutM (makeUniqueNameAbsolute path)
 
 data LookupVariableResponse
   = LookupVariableFound Declarable
@@ -511,7 +525,7 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
   where
     annotated = annKeys topExp
 
-    haltHandlers = HaltHandlers { _lookupVariable, _reduce, _replace }
+    haltHandlers = HaltHandlers { _lookupVariable, _reduce, _replace, _makeUniqueName }
 
     _reduce :: ExpKey -> EvaluateM ReductionResult
     _reduce key =
@@ -540,6 +554,28 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
           case lookupDefinition name env of
             Nothing -> LookupVariableNotFound env targetNode
             Just definition -> LookupVariableFound definition
+
+    _makeUniqueName :: ExpKey -> Name -> Name
+    _makeUniqueName expKey name =
+      case envExpAt topEnv topExp expKey of
+        Nothing -> name
+        Just (env, targetNode) ->
+          let hashName :: Name -> Name
+              hashName (Name occ flavour) = Name occ hashedFlavour
+                where
+                  hashedFlavour = case flavour of
+                    NameU uniq -> NameU $ fromIntegral $ Hash.asWord64 $ Hash.hash uniq
+                    NameL uniq -> NameL $ fromIntegral $ Hash.asWord64 $ Hash.hash uniq
+                    flav -> flav
+              go name =
+                case lookupDefinitionFullOnly name env of
+                  Nothing -> name
+                  Just _ ->
+                    let Name nameOcc nameFlav = name
+                        hashed@(Name hashNameOcc hashNameFlav) = hashName name
+                     in go (traceShow (nameOcc, nameFlav, "hashed", hashNameOcc, hashNameFlav) hashed)
+          in
+          go name
 
 -- TODO: This let-pruning has a bug: may misorder replacements
 -- e.g. let b = a; c = b in c => let c = b in c => b
@@ -575,14 +611,6 @@ getVarExp (VarE name) = Just name
 getVarExp (UnboundVarE name) = Just name
 getVarExp _ = Nothing
 
-hashName :: Name -> Name
-hashName (Name occ flavour) = Name occ hashedFlavour
-  where
-    hashedFlavour = case flavour of
-      NameU uniq -> NameU $ fromIntegral $ hashWithSalt 123456789 uniq
-      NameL uniq -> NameL $ fromIntegral $ hashWithSalt 123456789 uniq
-      flav -> flav
-
 reduce :: Fix (RecKey Exp) -> EvaluateM ReductionResult
 reduce exp = match (keyed expf)
   where
@@ -602,6 +630,9 @@ reduce exp = match (keyed expf)
 
     lookupVariable :: Name -> EvaluateM LookupVariableResponse
     lookupVariable name = lookupVariableAbsolute name globalPath
+
+    makeUniqueName :: Name -> EvaluateM Name
+    makeUniqueName name = makeUniqueNameAbsolute globalPath name
 
     forcesViaCase :: Exp -> Maybe ExpKey
     forcesViaCase exp =
@@ -711,7 +742,7 @@ reduce exp = match (keyed expf)
           let cardinality :: Int
               cardinality = 1
 
-              clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) Exp
+              clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)
               clauseToHandler (Clause pats body wheres) args =
                 let NormalB expBody = body -- TODO: Handle guards
                     clauseMatches = zip [0..] $ zipWith matchPatKeyed pats args
@@ -721,12 +752,12 @@ reduce exp = match (keyed expf)
                 in
                 case go clauseMatches of
                   Left err -> Left err
-                  Right bindings -> Right $ letWrap (mapMaybe patExpPairToValDecl bindings ++ wheres) expBody -- TODO: Do where decls take precedence over arguments?
+                  Right bindings -> Right (expBody, wheres, bindings)
 
               singleClause :: Clause
               singleClause = Clause [pat] (NormalB $ VarE name) []
 
-              handlers :: [[Exp] -> Either (Int, MatchFailure) Exp]
+              handlers :: [[Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)]
               handlers = [clauseToHandler singleClause]
 
               headArgs, remainingArgs :: [Maybe Exp]
@@ -736,7 +767,13 @@ reduce exp = match (keyed expf)
               targetFunctionPath :: ExpKey
               (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
 
+              inexhaustivePatternMatch :: EvaluateM ReductionResult
               inexhaustivePatternMatch = replaceSelf $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add data constructor name to errors
+
+              runHandler
+                :: (Int, [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess))
+                -> EvaluateM ReductionResult
+                -> EvaluateM ReductionResult
               runHandler (ii, handler) rest =
                 case handler (fromJust <$> headArgs) of
                   Left (argIdx, NeedsReduction (_, argSubPath)) -> do
@@ -747,7 +784,16 @@ reduce exp = match (keyed expf)
                     --emitLog $ show argIdx ++ "th clause did not match"
                     rest
                   -- TODO: Handle other kinds of failure
-                  Right result ->
+                  Right (expression, wheres, bindings) -> do
+                    let boundNames = concatMap (collectNames . fst) bindings
+                    let toUnique name = if name `elem` boundNames then makeUniqueName name else pure name
+
+                    -- warning: undecipherable lens magic:
+                    uniqueBindings <- bindings & L.traverse . L._1 L.%%~ transformMutM toUnique
+                    uniqueExpression <- transformMutM toUnique expression
+                    uniqueWheres <- traverse (transformMutM toUnique) wheres
+
+                    let result = letWrap (mapMaybe patExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
                     replaceRelative targetFunctionPath result
           in
           if any isNothing headArgs
@@ -760,7 +806,7 @@ reduce exp = match (keyed expf)
                   CustomFD cardinality _ -> cardinality
                   ClausesFD (Clause pats _ _:_) -> length pats -- function definitions should have at least one clause
 
-              clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) Exp
+              clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)
               clauseToHandler (Clause pats body wheres) args =
                 let NormalB expBody = body -- TODO: Handle guards
                     clauseMatches = zip [0..] $ zipWith matchPatKeyed pats args
@@ -770,12 +816,12 @@ reduce exp = match (keyed expf)
                 in
                 case go clauseMatches of
                   Left err -> Left err
-                  Right bindings -> Right $ letWrap (mapMaybe patExpPairToValDecl bindings ++ wheres) expBody -- TODO: Do where decls take precedence over arguments?
+                  Right bindings -> Right (expBody, wheres, bindings)
 
-              handlers :: [[Exp] -> Either (Int, MatchFailure) Exp]
+              handlers :: [[Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)]
               handlers =
                 case definition of
-                  CustomFD _ handler -> [unCustomShow handler]
+                  CustomFD _ handler -> [(fmap . fmap) (,[],[]) (unCustomShow handler)]
                   ClausesFD clauses -> map clauseToHandler clauses
 
               headArgs, remainingArgs :: [Maybe Exp]
@@ -785,8 +831,14 @@ reduce exp = match (keyed expf)
               targetFunctionPath :: ExpKey
               (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
 
+              inexhaustivePatternMatch :: EvaluateM ReductionResult
               inexhaustivePatternMatch = replaceSelf $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add function name to error
-              runHandler (ii, handler) rest =
+
+              runHandler
+                :: (Int, [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess))
+                -> EvaluateM ReductionResult
+                -> EvaluateM ReductionResult
+              runHandler (ii, handler) tryRest =
                 case handler (fromJust <$> headArgs) of
                   Left (argIdx, NeedsReduction (_, argSubPath)) -> do
                     --emitLog $ show argIdx ++ "th argument needs further reduction"
@@ -794,9 +846,18 @@ reduce exp = match (keyed expf)
                     reduceRelative (path ++ argSubPath) -- TODO: Do we need to handle CannotReduce?
                   Left (argIdx, Mismatch _) -> do
                     --emitLog $ show argIdx ++ "th clause did not match"
-                    rest
+                    tryRest
                   -- TODO: Handle other kinds of failure
-                  Right result ->
+                  Right (expression, wheres, bindings) -> do
+                    let boundNames = concatMap (collectNames . fst) bindings
+                    let toUnique name = if name `elem` boundNames then makeUniqueName name else pure name
+
+                    -- warning: undecipherable lens magic:
+                    uniqueBindings <- bindings & L.traverse . L._1 L.%%~ transformMutM toUnique
+                    uniqueExpression <- transformMutM toUnique expression
+                    uniqueWheres <- traverse (transformMutM toUnique) wheres
+
+                    let result = letWrap (mapMaybe patExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
                     replaceRelative targetFunctionPath result
           in
           if any isNothing headArgs
