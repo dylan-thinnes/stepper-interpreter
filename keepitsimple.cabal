@@ -42,6 +42,7 @@ library
         data-fix,
         deriving-compat,
         ghc-boot-th,
+        hashable,
         keys,
         mtl,
         pretty,

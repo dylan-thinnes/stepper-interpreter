@@ -28,6 +28,8 @@ import           "containers" Data.Map (Map)
 
 import "data-fix" Data.Fix (Fix(..))
 
+import "hashable" Data.Hashable
+
 import "keys" Data.Key (Key(..), Keyed(..), keyed, Adjustable(..))
 
 import "mtl" Control.Monad.Reader hiding (lift)
@@ -572,6 +574,14 @@ getVarExp :: Exp -> Maybe Name
 getVarExp (VarE name) = Just name
 getVarExp (UnboundVarE name) = Just name
 getVarExp _ = Nothing
+
+hashName :: Name -> Name
+hashName (Name occ flavour) = Name occ hashedFlavour
+  where
+    hashedFlavour = case flavour of
+      NameU uniq -> NameU $ fromIntegral $ hashWithSalt 123456789 uniq
+      NameL uniq -> NameL $ fromIntegral $ hashWithSalt 123456789 uniq
+      flav -> flav
 
 reduce :: Fix (RecKey Exp) -> EvaluateM ReductionResult
 reduce exp = match (keyed expf)
