@@ -215,11 +215,13 @@ data FlattenedApps a = FlattenedApps
   }
   deriving Show
 
-getIntermediateFunc :: Int -> [(Int, a)] -> (Int, Int, a)
-getIntermediateFunc n [] = error "getIntermediateFunc: ran out of functions"
-getIntermediateFunc n ((size, f):rest)
-  | n <= size = (n, size, f)
-  | otherwise = getIntermediateFunc (n - size) rest
+getIntermediateFunc :: Show a => Int -> [(Int, a)] -> (Int, Int, a)
+getIntermediateFunc origN origXs = go origN origXs
+  where
+    go n [] = error $ "getIntermediateFunc: ran out of functions, " ++ show origN ++ ", " ++ show (length origXs) ++ ", " ++ show origXs
+    go n ((size, f):rest)
+      | n <= size = (n, size, f)
+      | otherwise = go (n - size) rest
 
 flattenAppsF :: (a, ExpF a) -> Maybe (FlattenedApps a)
 flattenAppsF (orig, AppEF func arg) = Just $ FlattenedApps func [Just arg] [(1, orig)]
