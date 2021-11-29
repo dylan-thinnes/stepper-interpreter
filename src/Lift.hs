@@ -246,6 +246,9 @@ instance Mutplate Name Name where
 deriving instance DD.Data a => DD.Data (ExpF a)
 deriving instance DD.Data a => DD.Data (PatF a)
 
+transformMut :: Mutplate from to => (to -> to) -> from -> from
+transformMut f = runIdentity . transformMutM (Identity . f)
+
 instance
   ( DD.Data a
   , DD.Data (f (Fix (Ann a f)))
