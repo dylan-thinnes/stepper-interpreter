@@ -105,7 +105,7 @@ prog = $(lift =<< [|
     Just y -> y
   |])
 
-runDataField :: IO ()
+runDataField :: IO (Either String ReductionResult)
 runDataField = run' [d|
   data MyData = X { a :: Int, b :: Int } | Y { c :: Int }
   exp =
@@ -115,7 +115,7 @@ runDataField = run' [d|
     a x + b x + c y
   |]
 
-runMapMaybe :: IO ()
+runMapMaybe :: IO (Either String ReductionResult)
 runMapMaybe = run' [d|
   g 0 = Nothing
   g x = Just (x * x)
@@ -127,7 +127,7 @@ runMapMaybe = run' [d|
   exp = mapMaybe g [1,0,2,0,3,0]
   |]
 
-runCircularPruning :: IO ()
+runCircularPruning :: IO (Either String ReductionResult)
 runCircularPruning = run' [d|
   exp =
     let x = 1 + y
@@ -139,26 +139,40 @@ runCircularPruning = run' [d|
     x
   |]
 
-run' :: DecsQ -> IO ()
+runFoldlSum :: IO (Either String ReductionResult)
+runFoldlSum = run' [d|
+  foldl' f acc (y:rest) = foldl' f (f acc y) rest
+  foldl' f acc [] = acc
+  exp =
+    foldl' (+) 0 [1,2,3,4]
+  |]
+
+run' :: DecsQ -> IO (Either String ReductionResult)
 run' decsQ = do
   decs <- runQ decsQ
   let env = envFromDecs decs
   let Just (ValueDeclaration _ (NormalB exp) _) = lookupDefinitionRaw "exp" env
   run env exp
 
-run :: Environment -> Exp -> IO ()
+run :: Environment -> Exp -> IO (Either String ReductionResult)
 run env exp = do
   putStrLn "Starting environment:"
   putStrLn (debugEnvironment env)
-  printExp (Right $ NewlyReduced exp)
-  getLine
-  mapM_ (\exp -> printExp exp >> getLine) reductionSteps
+  let oneStep [] = error "Demos.Evaluator.run: empty list - this shouldn't happen"
+      oneStep [exp] = do
+        printExp exp
+        pure exp
+      oneStep (exp:rest) = do
+        printExp exp
+        inp <- getLine
+        if null inp then oneStep rest else pure exp
+  oneStep reductionSteps
   where
   reductionSteps :: [Either String ReductionResult]
   reductionSteps = takeWhile (either (const True) (not . isCannotReduce)) steps
 
   steps :: [Either String ReductionResult]
-  steps = iterate (\exp -> evaluate env =<< fmap getRedRes exp) (evaluate env exp)
+  steps = iterate (\exp -> evaluate env =<< fmap getRedRes exp) (Right $ NewlyReduced exp)
 
   printExp :: Either String ReductionResult -> IO ()
   printExp (Left err) =
