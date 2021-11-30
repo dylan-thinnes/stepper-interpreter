@@ -23,6 +23,9 @@ import "uniplate" Data.Generics.Uniplate.Data qualified as B
 import Debug.Trace
 
 -- utils
+snd3 :: (a, b, c) -> b
+snd3 (_, b, _) = b
+
 thd :: (a, b, c) -> c
 thd (_, _, c) = c
 
@@ -48,9 +51,11 @@ dependents dependency depGraph =
       (graph, lookupVertex, lookupName) = G.graphFromEdges edges
       Just dependencyV = lookupName dependency
   in do
-    vertex <- G.reachable (G.transposeG graph) dependencyV
-    let (_, name, dependencies) = lookupVertex vertex
-    pure (name, dependencies)
+    let vertices = G.reachable (G.transposeG graph) dependencyV
+    let namesDepss = map lookupVertex vertices
+    let depss = map snd3 namesDepss
+    (_, name, deps) <- namesDepss
+    pure (name, filter (`elem` depss) deps)
 
 class Mutplate from to where
   transformMutM :: forall m. Monad m => (to -> m to) -> from -> m from
