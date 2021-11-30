@@ -249,6 +249,8 @@ deriving instance DD.Data a => DD.Data (PatF a)
 transformMut :: Mutplate from to => (to -> to) -> from -> from
 transformMut f = runIdentity . transformMutM (Identity . f)
 
+-- mutplate for finding names in the mutually recursive tree
+
 instance
   ( DD.Data a
   , DD.Data (f (Fix (Ann a f)))
@@ -350,3 +352,93 @@ instance Mutplate Clause Name where
     = transformBiM @_ @Clause @Pat (transformMutM f)
     <=< transformBiM @_ @Clause @Body (transformMutM f)
     <=< transformBiM @_ @Clause @Dec (transformMutM f)
+
+-- mutplate for finding expressions in the mutually recursive tree
+
+instance DD.Data a => Mutplate (PatF a) Exp where
+  transformMutM f =
+        transformBiM @_ @(PatF a) @Exp (transformMutM f)
+    <=< transformBiM @_ @(PatF a) @FieldPat (transformMutM f)
+
+instance DD.Data a => Mutplate (ExpF a) Exp where
+  transformMutM f =
+        transformBiM @_ @(ExpF a) @Dec (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @FieldExp (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @Guard (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @Match (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @Pat (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @Range (transformMutM f)
+    <=< transformBiM @_ @(ExpF a) @Stmt (transformMutM f)
+
+instance Mutplate Exp Exp where
+  transformMutM f =
+    f
+    <=< transformBiM @_ @Exp @Dec (transformMutM f)
+    <=< transformBiM @_ @Exp @FieldExp (transformMutM f)
+    <=< transformBiM @_ @Exp @Guard (transformMutM f)
+    <=< transformBiM @_ @Exp @Match (transformMutM f)
+    <=< transformBiM @_ @Exp @Pat (transformMutM f)
+    <=< transformBiM @_ @Exp @Range (transformMutM f)
+    <=< transformBiM @_ @Exp @Stmt (transformMutM f)
+
+instance Mutplate Stmt Exp where
+  transformMutM f =
+        transformBiM @_ @Stmt @Dec (transformMutM f)
+    <=< transformBiM @_ @Stmt @Exp (transformMutM f)
+    <=< transformBiM @_ @Stmt @Pat (transformMutM f)
+
+instance Mutplate Guard Exp where
+  transformMutM f =
+        transformBiM @_ @Guard @Exp (transformMutM f)
+    <=< transformBiM @_ @Guard @Stmt (transformMutM f)
+
+instance Mutplate Body Exp where
+  transformMutM f =
+        transformBiM @_ @Body @Exp (transformMutM f)
+    <=< transformBiM @_ @Body @Guard (transformMutM f)
+
+instance Mutplate Match Exp where
+  transformMutM f =
+        transformBiM @_ @Match @Body (transformMutM f)
+    <=< transformBiM @_ @Match @Dec (transformMutM f)
+    <=< transformBiM @_ @Match @Pat (transformMutM f)
+
+instance Mutplate Dec Exp where
+  transformMutM f =
+        transformBiM @_ @Dec @Body (transformMutM f)
+    <=< transformBiM @_ @Dec @Clause (transformMutM f)
+    <=< transformBiM @_ @Dec @Exp (transformMutM f)
+    <=< transformBiM @_ @Dec @Pat (transformMutM f)
+    <=< transformBiM @_ @Dec @PatSynDir (transformMutM f)
+    <=< transformBiM @_ @Dec @Pragma (transformMutM f)
+
+instance Mutplate Clause Exp where
+  transformMutM f =
+        transformBiM @_ @Clause @Body (transformMutM f)
+    <=< transformBiM @_ @Clause @Dec (transformMutM f)
+    <=< transformBiM @_ @Clause @Pat (transformMutM f)
+
+instance Mutplate PatSynDir Exp where
+  transformMutM f =
+        transformBiM @_ @PatSynDir @Clause (transformMutM f)
+
+instance Mutplate Range Exp where
+  transformMutM f =
+        transformBiM @_ @Range @Exp (transformMutM f)
+
+instance Mutplate Pragma Exp where
+  transformMutM f =
+        transformBiM @_ @Pragma @Exp (transformMutM f)
+
+instance Mutplate Pat Exp where
+  transformMutM f =
+        transformBiM @_ @Pat @Exp (transformMutM f)
+    <=< transformBiM @_ @Pat @FieldPat (transformMutM f)
+
+instance Mutplate FieldPat Exp where
+  transformMutM f =
+        transformBiM @_ @FieldPat @Pat (transformMutM f)
+
+instance Mutplate FieldExp Exp where
+  transformMutM f =
+        transformBiM @_ @FieldExp @Exp (transformMutM f)
