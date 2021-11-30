@@ -35,6 +35,7 @@ import qualified Data.Data as DD
 
 import qualified Data.Functor.Foldable as R
 import Lift
+import Lift.DataDeps
 
 import Ppr.Lib hiding (Doc)
 import qualified Ppr.Lib

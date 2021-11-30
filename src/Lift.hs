@@ -28,6 +28,8 @@ import "base" Foreign.ForeignPtr
 import "base" GHC.Generics (Generic1(..))
 import "base" Data.Data qualified as DD
 
+import "containers" Data.Map qualified as M
+
 import "data-fix" Data.Fix (Fix(..))
 
 import "deriving-compat" Text.Show.Deriving
@@ -41,6 +43,10 @@ import "uniplate" Data.Generics.Uniplate.Data
 
 import "recursion-schemes" Data.Functor.Foldable qualified as R
 import "recursion-schemes" Data.Functor.Foldable.TH qualified as R
+
+import Debug.Trace
+
+import Lift.DataDeps
 
 instance Lift Bytes where
     lift _ = error "Cannot lift Bytes."
@@ -58,8 +64,6 @@ deriving instance Lift Safety
 deriving instance Lift Callconv
 deriving instance Lift SourceStrictness
 deriving instance Lift SourceUnpackedness
-deriving instance Lift PkgName
-deriving instance Lift NameSpace
 deriving instance Lift PatSynDir
 deriving instance Lift PatSynArgs
 deriving instance Lift DerivStrategy
@@ -72,15 +76,12 @@ deriving instance Lift Foreign
 deriving instance Lift Overlap
 deriving instance Lift FunDep
 deriving instance Lift Bang
-deriving instance Lift ModName
 deriving instance Lift DerivClause
 deriving instance Lift Con
 deriving instance Lift Clause
 deriving instance Lift Body
 deriving instance Lift TyLit
 deriving instance Lift TyVarBndr
-deriving instance Lift NameFlavour
-deriving instance Lift OccName
 deriving instance Lift Range
 deriving instance Lift Stmt
 deriving instance Lift Dec
@@ -89,7 +90,6 @@ deriving instance Lift Match
 deriving instance Lift Pat
 deriving instance Lift Type
 deriving instance Lift Lit
-deriving instance Lift Name
 deriving instance Lift Exp
 
 R.makeBaseFunctor ''Exp
@@ -237,9 +237,6 @@ transformAllNames f = runIdentity . transformMutM (Identity . f)
 replaceName :: Mutplate from Name => Name -> Name -> from -> from
 replaceName from to = transformAllNames (\name -> if name == from then to else name)
 
-class Mutplate from to where
-  transformMutM :: Monad m => (to -> m to) -> from -> m from
-
 instance Mutplate Name Name where
   transformMutM = id
 
@@ -350,3 +347,27 @@ instance Mutplate Clause Name where
     = transformBiM @_ @Clause @Pat (transformMutM f)
     <=< transformBiM @_ @Clause @Body (transformMutM f)
     <=< transformBiM @_ @Clause @Dec (transformMutM f)
+
+-- example of deriveMutplate
+data X = X1 Int | X2 Char | X3 Y
+  deriving (Show, DD.Data, DD.Typeable)
+data Y = Y1 X X | Y2 Char | Y3 Y
+  deriving (Show, DD.Data, DD.Typeable)
+data Z = Z1 X Y
+  deriving (Show, DD.Data, DD.Typeable)
+
+ex = (Y1 (X3 (Y1 (X1 0) (X2 'a'))) (X3 (Y1 (X2 'b') (X3 (Y2 'c')))))
+
+-- $(deriveMutplate ''Bool [''Z])
+instance Mutplate Char Char where
+  transformMutM f_0 = f_0
+instance Mutplate Y Char where
+  transformMutM f_0 =
+    transformBiM @_ @Y @Char f_0
+instance Mutplate Z Char where
+  transformMutM f_0 =
+    transformBiM @_ @Z @X (transformMutM f_0)
+      <=< transformBiM @_ @Z @Y (transformMutM f_0)
+instance Mutplate X Char where
+  transformMutM f_0 =
+    transformBiM @_ @X @Char f_0

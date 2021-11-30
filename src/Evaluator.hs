@@ -50,6 +50,7 @@ import "recursion-schemes" Data.Functor.Foldable qualified as R
 import "recursion-schemes" Data.Functor.Foldable.TH qualified as R
 
 import Lift
+import Lift.DataDeps
 import Ppr qualified as P
 
 import Debug.Trace
