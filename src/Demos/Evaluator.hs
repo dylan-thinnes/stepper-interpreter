@@ -180,5 +180,5 @@ run env exp = do
   printExp (Right redRes) = do
     putStrLn "============"
     let source = P.pprint $ P.cleanNames (getRedRes redRes)
-    highlighted <- readProcess "/usr/bin/batcat" (words "--theme zenburn -l haskell -pp --color always -") source
+    highlighted <- readProcess "batcat" (words "--theme zenburn -l haskell -pp --color always -") source
     putStr highlighted
