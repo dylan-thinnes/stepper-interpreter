@@ -23,6 +23,7 @@ import "base" Data.Either (isRight, partitionEithers)
 import "base" Data.Maybe (isNothing, catMaybes, fromJust, mapMaybe)
 import "base" Data.Void
 import "base" Data.Data
+import "base" Data.List
 import "base" GHC.Generics
 
 import qualified "containers" Data.Map as M
@@ -561,21 +562,31 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
         Nothing -> name
         Just (env, targetNode) ->
           let hashName :: Name -> Name
-              hashName (Name occ flavour) = Name occ hashedFlavour
-                where
-                  hashedFlavour = case flavour of
-                    NameU uniq -> NameU $ fromIntegral $ Hash.asWord64 $ Hash.hash uniq
-                    NameL uniq -> NameL $ fromIntegral $ Hash.asWord64 $ Hash.hash uniq
-                    flav -> flav
-              go name =
+              hashName (Name occ flav) = Name (incrementName occ) (hashFlavour flav)
+
+              hashUntilUnique :: Name -> Name
+              hashUntilUnique name =
                 case lookupDefinitionFullOnly name env of
                   Nothing -> name
-                  Just _ ->
-                    let Name nameOcc nameFlav = name
-                        hashed@(Name hashNameOcc hashNameFlav) = hashName name
-                     in go (traceShow (nameOcc, nameFlav, "hashed", hashNameOcc, hashNameFlav) hashed)
+                  Just _ -> hashUntilUnique $ hashName name
           in
-          go name
+          hashUntilUnique name
+
+hashFlavour :: NameFlavour -> NameFlavour
+hashFlavour flavour = case flavour of
+  NameU uniq -> NameU $ fromIntegral $ Hash.asWord64 $ Hash.hash uniq
+  NameL uniq -> NameL $ fromIntegral $ Hash.asWord64 $ Hash.hash uniq
+  flav -> flav
+
+incrementName :: OccName -> OccName
+incrementName (OccName occ) = OccName modified
+  where
+  beforeUS = takeWhile (/= '_') occ
+  afterUS = drop (length beforeUS + 1) occ
+  modified =
+    case reads @Int afterUS of
+      [(i, "")] -> beforeUS ++ "_" ++ show (i + 1)
+      _ -> beforeUS ++ "_0"
 
 -- TODO: This let-pruning has a bug: may misorder replacements
 -- e.g. let b = a; c = b in c => let c = b in c => b
