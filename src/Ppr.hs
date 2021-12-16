@@ -89,7 +89,7 @@ pprintColoured annexp = foldr colourSpan source spans
       pre ++ colorByANSI color text ++ post
 
 -- removing qualified names from base package for simpler pprinting
-cleanNames :: Mutplate from Name => from -> from
+cleanNames :: (DD.Data from, Biplate from Name) => from -> from
 cleanNames = transformAllNames (toStandalone . removeBaseQualifications)
   where
     -- remove mentions of common packages

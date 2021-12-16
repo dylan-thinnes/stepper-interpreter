@@ -495,8 +495,8 @@ replaceAbsolute path exp = ask >>= \f -> _replace f path exp
 makeUniqueNameAbsolute :: ExpKey -> Name -> EvaluateM Name
 makeUniqueNameAbsolute path name = asks $ \f -> _makeUniqueName f path name
 
-makeUniqueNamesAbsolute :: Mutplate from Name => ExpKey -> from -> EvaluateM from
-makeUniqueNamesAbsolute path = transformMutM (makeUniqueNameAbsolute path)
+makeUniqueNamesAbsolute :: (Data from, Biplate from Name) => ExpKey -> from -> EvaluateM from
+makeUniqueNamesAbsolute path = transformBiM (makeUniqueNameAbsolute path)
 
 data LookupVariableResponse
   = LookupVariableFound Declarable
@@ -606,13 +606,13 @@ letWrap decls e =
     ([], _) -> LetE complexDecls e
     (_, _) -> foldr applySimpleDecl (letWrap complexDecls e) simpleDecls
 
-nameUsedIn :: forall from. Mutplate from Name => from -> Name -> Bool
+nameUsedIn :: forall from. (Data from, Biplate from Name) => from -> Name -> Bool
 nameUsedIn exp name = name `elem` collectNames @from exp
 
-collectNames :: forall from. Mutplate from Name => from -> [Name]
-collectNames = fst . transformMutM @from @Name (\x -> ([x], x))
+collectNames :: forall from. (Data from, Biplate from Name) => from -> [Name]
+collectNames = fst . transformBiM @_ @from @Name (\x -> ([x], x))
 
-isDeclLivingIn :: forall from. Mutplate from Name => from -> Dec -> Bool
+isDeclLivingIn :: forall from. (Data from, Biplate from Name) => from -> Dec -> Bool
 isDeclLivingIn exp (FunD name _) = nameUsedIn exp name
 isDeclLivingIn exp (ValD pat _ _) = any (nameUsedIn exp) (childrenBi pat)
 isDeclLivingIn _ _ = error "isDeclLivingIn: Unrecognized pattern"
@@ -800,9 +800,9 @@ reduce exp = match (keyed expf)
                     let toUnique name = if name `elem` boundNames then makeUniqueName name else pure name
 
                     -- warning: undecipherable lens magic:
-                    uniqueBindings <- bindings & L.traverse . L._1 L.%%~ transformMutM toUnique
-                    uniqueExpression <- transformMutM toUnique expression
-                    uniqueWheres <- traverse (transformMutM toUnique) wheres
+                    uniqueBindings <- bindings & L.traverse . L._1 L.%%~ transformBiM toUnique
+                    uniqueExpression <- transformBiM toUnique expression
+                    uniqueWheres <- traverse (transformBiM toUnique) wheres
 
                     let result = letWrap (mapMaybe patExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
                     replaceRelative targetFunctionPath result
@@ -864,9 +864,9 @@ reduce exp = match (keyed expf)
                     let toUnique name = if name `elem` boundNames then makeUniqueName name else pure name
 
                     -- warning: undecipherable lens magic:
-                    uniqueBindings <- bindings & L.traverse . L._1 L.%%~ transformMutM toUnique
-                    uniqueExpression <- transformMutM toUnique expression
-                    uniqueWheres <- traverse (transformMutM toUnique) wheres
+                    uniqueBindings <- bindings & L.traverse . L._1 L.%%~ transformBiM toUnique
+                    uniqueExpression <- transformBiM toUnique expression
+                    uniqueWheres <- traverse (transformBiM toUnique) wheres
 
                     let result = letWrap (mapMaybe patExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
                     replaceRelative targetFunctionPath result
