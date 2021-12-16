@@ -676,9 +676,10 @@ reduce exp = match (keyed expf)
           matchingPats = map extractMatchingPat decls
       in
       if any isRight matchingPats
-      then do
+      then
         let explodedMatchingPats :: [Dec]
             explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
+        in
         replaceSelf $ letWrap explodedMatchingPats (deann body)
       else
         let remainingDecls :: [Dec]
