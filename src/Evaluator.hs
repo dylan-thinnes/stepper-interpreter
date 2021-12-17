@@ -597,7 +597,7 @@ isSimpleDecl (ValD (VarP from) (NormalB body) [])
   | Just to <- getVarExp body
   = Just $ VarRename from to
   | fullyReduced body
-  = Just $ FullyReduced from body
+  = Just $ FullyReduced from body -- TODO: How much do we want to actually substitute?
     where
       fullyReduced exp
         | LitE _ <- exp
