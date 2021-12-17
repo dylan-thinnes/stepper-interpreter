@@ -640,7 +640,7 @@ getVarExp (UnboundVarE name) = Just name
 getVarExp _ = Nothing
 
 reduce :: Fix (RecKey Exp) -> EvaluateM ReductionResult
-reduce exp = match (keyed expf)
+reduce exp = match
   where
     Fix (Pair (Const globalPath) expf) = exp
 
@@ -669,88 +669,89 @@ reduce exp = match (keyed expf)
         CondEF (targetIdx, target) _ _ -> Just [targetIdx]
         _ -> Nothing
 
-    match :: ExpF (Key ExpF, Fix (RecKey Exp)) -> EvaluateM ReductionResult
+    match :: EvaluateM ReductionResult
 
-    match _
+    match
       | Just targetPath <- forcesViaCase (deann exp)
       , Just (env, subexp) <- envExpAt defaultEnvironment (deann exp) targetPath
       , LetE decs body <- subexp
       = replaceSelf $ letWrap decs $ modExpByKey (const body) targetPath (deann exp)
 
-    -- can't reduce literals
-    match (LitEF _) = cannotReduce
+      -- can't reduce literals
+      | LitEF _ <- expf
+      = cannotReduce
 
-    -- remove let statements when appropriate
-    match (LetEF decls (bodyIdx, body)) =
-      let extractMatchingPat orig@(ValD pat (NormalB exp) _) -- TODO: handle guards
-            | VarP _ <- pat
-            = Left orig
-            | Right matches <- matchPatKeyed pat exp
-            = Right matches
-          extractMatchingPat orig = Left orig
+      -- remove let statements when appropriate
+      | LetEF decls (bodyIdx, body) <- keyed expf
+      = let extractMatchingPat orig@(ValD pat (NormalB exp) _) -- TODO: handle guards
+              | VarP _ <- pat
+              = Left orig
+              | Right matches <- matchPatKeyed pat exp
+              = Right matches
+            extractMatchingPat orig = Left orig
 
-          matchingPats :: [Either Dec MatchSuccess]
-          matchingPats = map extractMatchingPat decls
-      in
-      if any isRight matchingPats
-      then
-        let explodedMatchingPats :: [Dec]
-            explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
+            matchingPats :: [Either Dec MatchSuccess]
+            matchingPats = map extractMatchingPat decls
         in
-        replaceSelf $ letWrap explodedMatchingPats (deann body)
-      else
-        let remainingDecls :: [Dec]
-            remainingDecls = map snd $ filter isDeclLiving $ zip [0..] decls
-
-            isDeclLiving :: (Int, Dec) -> Bool
-            isDeclLiving (idx, decl) =
-              let livesInBody = isDeclLivingIn (deann @Exp body) decl
-                  nonSelfDecls = removeList idx decls
-                  livesInOtherDecls = any (isDeclInDec decl) nonSelfDecls
-              in
-              livesInBody || livesInOtherDecls
-
-            isDeclInDec :: Dec -> Dec -> Bool
-            isDeclInDec decl (ValD _ body decs) = isDeclLivingIn body decl || any (`isDeclLivingIn` decl) decs
-            isDeclInDec decl (FunD _ clauses) = any (`isDeclLivingIn` decl) clauses
-            isDeclInDec decl _ = False
-        in
-        if length remainingDecls < length decls
-          then replaceSelf $ letWrap remainingDecls (deann body)
-          else reduceRelative [bodyIdx]
-
-    -- handle if statements
-    match (CondEF (condIdx, cond) (_, true) (_, false)) =
-      case matchPatKeyed (ConP 'True []) (deann cond) of
-        Right _ -> replaceSelf $ deann true
-        Left (Mismatch _) -> replaceSelf $ deann false
-        Left (NeedsReduction (patKey, expKey)) ->
-          reduceRelative (condIdx : expKey)
-        Left (UnexpectedErrorMatch _ _) ->
-          throwError "CondE: Unexpected error in matching process - this should not happen!"
-
-    -- handle case statements
-    match (CaseEF (targetIdx, target) branches) =
-      foldr handleBranch noBranchesLeft (zip [0..] branches)
-      where
-      noBranchesLeft = replaceSelf $(lift =<< [e| error "Inexhaustive pattern match." |])
-      handleBranch (ii, branch) tryNext
-        = let Match pat matchBody decls = branch
-              NormalB body = matchBody -- TODO: handle guards
-              explodeIntoLet boundVars =
-                letWrap (mapMaybe patExpPairToValDecl boundVars ++ decls) body
+        if any isRight matchingPats
+        then
+          let explodedMatchingPats :: [Dec]
+              explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
           in
-          case matchPatKeyed pat (deann target) of
-            Right boundVars ->
-              replaceSelf $ explodeIntoLet boundVars
-            Left (Mismatch (patKey, expKey)) ->
-              tryNext
-            Left (NeedsReduction (patKey, expKey)) ->
-              reduceRelative (targetIdx : expKey)
-            Left (UnexpectedErrorMatch _ _) ->
-              error "Unexpected error in matching process - this should not happen!"
+          replaceSelf $ letWrap explodedMatchingPats (deann body)
+        else
+          let remainingDecls :: [Dec]
+              remainingDecls = map snd $ filter isDeclLiving $ zip [0..] decls
 
-    match _
+              isDeclLiving :: (Int, Dec) -> Bool
+              isDeclLiving (idx, decl) =
+                let livesInBody = isDeclLivingIn (deann @Exp body) decl
+                    nonSelfDecls = removeList idx decls
+                    livesInOtherDecls = any (isDeclInDec decl) nonSelfDecls
+                in
+                livesInBody || livesInOtherDecls
+
+              isDeclInDec :: Dec -> Dec -> Bool
+              isDeclInDec decl (ValD _ body decs) = isDeclLivingIn body decl || any (`isDeclLivingIn` decl) decs
+              isDeclInDec decl (FunD _ clauses) = any (`isDeclLivingIn` decl) clauses
+              isDeclInDec decl _ = False
+          in
+          if length remainingDecls < length decls
+            then replaceSelf $ letWrap remainingDecls (deann body)
+            else reduceRelative [bodyIdx]
+
+      -- handle if statements
+      | (CondEF (condIdx, cond) (_, true) (_, false)) <- keyed expf
+      = case matchPatKeyed (ConP 'True []) (deann cond) of
+          Right _ -> replaceSelf $ deann true
+          Left (Mismatch _) -> replaceSelf $ deann false
+          Left (NeedsReduction (patKey, expKey)) ->
+            reduceRelative (condIdx : expKey)
+          Left (UnexpectedErrorMatch _ _) ->
+            throwError "CondE: Unexpected error in matching process - this should not happen!"
+
+      -- handle case statements
+      | (CaseEF (targetIdx, target) branches) <- keyed expf
+      = let
+          noBranchesLeft = replaceSelf $(lift =<< [e| error "Inexhaustive pattern match." |])
+          handleBranch (ii, branch) tryNext
+            = let Match pat matchBody decls = branch
+                  NormalB body = matchBody -- TODO: handle guards
+                  explodeIntoLet boundVars =
+                    letWrap (mapMaybe patExpPairToValDecl boundVars ++ decls) body
+              in
+              case matchPatKeyed pat (deann target) of
+                Right boundVars ->
+                  replaceSelf $ explodeIntoLet boundVars
+                Left (Mismatch (patKey, expKey)) ->
+                  tryNext
+                Left (NeedsReduction (patKey, expKey)) ->
+                  reduceRelative (targetIdx : expKey)
+                Left (UnexpectedErrorMatch _ _) ->
+                  error "Unexpected error in matching process - this should not happen!"
+        in
+        foldr handleBranch noBranchesLeft (zip [0..] branches)
+
       -- handle function application
       | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys $ deann @Exp exp)
       , Just name <- getVarExp $ deann func
@@ -906,4 +907,5 @@ reduce exp = match (keyed expf)
         in
         foldr tryArg finish (zip [0..] args)
 
-    match _ = error $ "reduce: Can't match " ++ pprint (deann @Exp exp) ++ ", AST: " ++ show (deann @Exp exp)
+      | otherwise
+      = error $ "reduce: Can't match " ++ pprint (deann @Exp exp) ++ ", AST: " ++ show (deann @Exp exp)
