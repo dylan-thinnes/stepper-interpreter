@@ -481,7 +481,7 @@ type EvaluateM = ReaderT HaltHandlers (Except String)
 data HaltHandlers = HaltHandlers
   { _lookupVariable :: Name -> ExpKey -> LookupVariableResponse
   , _reduce :: ExpKey -> EvaluateM ReductionResult
-  , _replace :: ExpKey -> Exp -> EvaluateM ReductionResult
+  , _replace :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
   , _makeUniqueName :: ExpKey -> Name -> Name
   }
 
@@ -491,8 +491,8 @@ lookupVariableAbsolute name path = asks $ \f -> _lookupVariable f name path
 reduceAbsolute :: ExpKey -> EvaluateM ReductionResult
 reduceAbsolute path = ask >>= \f -> _reduce f path
 
-replaceAbsolute :: ExpKey -> Exp -> EvaluateM ReductionResult
-replaceAbsolute path exp = ask >>= \f -> _replace f path exp
+replaceAbsolute :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
+replaceAbsolute reason path exp = ask >>= \f -> _replace f reason path exp
 
 makeUniqueNameAbsolute :: ExpKey -> Name -> EvaluateM Name
 makeUniqueNameAbsolute path name = asks $ \f -> _makeUniqueName f path name
@@ -508,7 +508,7 @@ data LookupVariableResponse
 
 data ReductionResultF a
   = CannotReduce { getRedRes :: a }
-  | NewlyReduced { getRedRes :: a }
+  | NewlyReduced { reason :: Maybe String, getRedRes :: a }
   deriving (Show, Functor)
 
 isCannotReduce :: ReductionResultF a -> Bool
@@ -518,10 +518,10 @@ isCannotReduce _ = False
 type ReductionResult = ReductionResultF Exp
 
 instance Applicative ReductionResultF where
-  pure = NewlyReduced
-  (<*>) (NewlyReduced f) (NewlyReduced a) = NewlyReduced $ f a
-  (<*>) (CannotReduce f) a                = CannotReduce $ f $ getRedRes a
-  (<*>) f                (CannotReduce a) = CannotReduce $ getRedRes f a
+  pure = NewlyReduced Nothing
+  (<*>) (NewlyReduced r1 f) (NewlyReduced r2 a) = NewlyReduced (r1 <> r2) $ f a
+  (<*>) (CannotReduce f)    a                   = CannotReduce $ f $ getRedRes a
+  (<*>) f                   (CannotReduce a)    = CannotReduce $ getRedRes f a
 
 evaluate :: Environment -> Exp -> Either String ReductionResult
 evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
@@ -546,8 +546,8 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
           path
           annotated
 
-    _replace :: ExpKey -> Exp -> EvaluateM ReductionResult
-    _replace key exp = modifyExp (const $ pure $ NewlyReduced exp) key
+    _replace :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
+    _replace reason key exp = modifyExp (const $ pure $ NewlyReduced reason exp) key
 
     _lookupVariable :: Name -> ExpKey -> LookupVariableResponse
     _lookupVariable name expKey =
@@ -664,11 +664,11 @@ reduce exp = match
     cannotReduce :: EvaluateM ReductionResult
     cannotReduce = pure $ CannotReduce $ deann exp
 
-    replaceSelf :: Exp -> EvaluateM ReductionResult
-    replaceSelf = replaceAbsolute globalPath
+    replaceSelf :: Maybe String -> Exp -> EvaluateM ReductionResult
+    replaceSelf reason = replaceRelative reason []
 
-    replaceRelative :: ExpKey -> Exp -> EvaluateM ReductionResult
-    replaceRelative path = replaceAbsolute (globalPath ++ path)
+    replaceRelative :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
+    replaceRelative reason path = replaceAbsolute reason (globalPath ++ path)
 
     reduceRelative :: ExpKey -> EvaluateM ReductionResult
     reduceRelative path = reduceAbsolute (globalPath ++ path)
@@ -692,7 +692,7 @@ reduce exp = match
       | Just targetPath <- forcesViaCase (deann exp)
       , Just (env, subexp) <- envExpAt defaultEnvironment (deann exp) targetPath
       , LetE decs body <- subexp
-      = replaceSelf $ letWrap decs $ modExpByKey (const body) targetPath (deann exp)
+      = replaceSelf Nothing $ letWrap decs $ modExpByKey (const body) targetPath (deann exp)
 
       -- can't reduce literals
       | LitEF _ <- expf
@@ -713,7 +713,7 @@ reduce exp = match
       = let explodedMatchingPats :: [Dec]
             explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
         in
-        replaceSelf $ letWrap explodedMatchingPats (deann body)
+        replaceSelf Nothing $ letWrap explodedMatchingPats (deann body)
       | LetEF decls (bodyIdx, body) <- keyed expf
       , let remainingDecls :: [Dec]
             remainingDecls = map snd $ filter isDeclLiving $ zip [0..] decls
@@ -731,18 +731,18 @@ reduce exp = match
             isDeclInDec decl (FunD _ clauses) = any (`isDeclLivingIn` decl) clauses
             isDeclInDec decl _ = False
       , length remainingDecls < length decls
-      = replaceSelf $ letWrap remainingDecls (deann body)
+      = replaceSelf Nothing $ letWrap remainingDecls (deann body)
       | LetEF decls (bodyIdx, body) <- keyed expf
       , (simpleDecl:rest, complexDecls) <- partitionSimpleDecls decls
-      = replaceSelf $ letWrap (map snd rest ++ complexDecls) (applySimpleDecl (fst simpleDecl) (deann body))
+      = replaceSelf (Just "Simplify simple decl") $ letWrap (map snd rest ++ complexDecls) (applySimpleDecl (fst simpleDecl) (deann body))
       | LetEF decls (bodyIdx, body) <- keyed expf
       = reduceRelative [bodyIdx]
 
       -- handle if statements
       | (CondEF (condIdx, cond) (_, true) (_, false)) <- keyed expf
       = case matchPatKeyed (ConP 'True []) (deann cond) of
-          Right _ -> replaceSelf $ deann true
-          Left (Mismatch _) -> replaceSelf $ deann false
+          Right _ -> replaceSelf Nothing $ deann true
+          Left (Mismatch _) -> replaceSelf Nothing $ deann false
           Left (NeedsReduction (patKey, expKey)) ->
             reduceRelative (condIdx : expKey)
           Left (UnexpectedErrorMatch _ _) ->
@@ -751,7 +751,7 @@ reduce exp = match
       -- handle case statements
       | (CaseEF (targetIdx, target) branches) <- keyed expf
       = let
-          noBranchesLeft = replaceSelf $(lift =<< [e| error "Inexhaustive pattern match." |])
+          noBranchesLeft = replaceSelf Nothing $(lift =<< [e| error "Inexhaustive pattern match." |])
           handleBranch (ii, branch) tryNext
             = let Match pat matchBody decls = branch
                   NormalB body = matchBody -- TODO: handle guards
@@ -760,7 +760,7 @@ reduce exp = match
               in
               case matchPatKeyed pat (deann target) of
                 Right boundVars ->
-                  replaceSelf $ explodeIntoLet boundVars
+                  replaceSelf Nothing $ explodeIntoLet boundVars
                 Left (Mismatch (patKey, expKey)) ->
                   tryNext
                 Left (NeedsReduction (patKey, expKey)) ->
@@ -785,7 +785,7 @@ reduce exp = match
               NormalB bodyExp = body -- TODO: handle guards
               VarP name = pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
           in
-          replaceRelative funcIdx $ letWrap wheres bodyExp
+          replaceRelative Nothing funcIdx $ letWrap wheres bodyExp
         LookupVariableFound (DataField pat name) ->
           let cardinality :: Int
               cardinality = 1
@@ -816,7 +816,7 @@ reduce exp = match
               (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
 
               inexhaustivePatternMatch :: EvaluateM ReductionResult
-              inexhaustivePatternMatch = replaceSelf $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add data constructor name to errors
+              inexhaustivePatternMatch = replaceSelf Nothing $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add data constructor name to errors
 
               runHandler
                 :: (Int, [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess))
@@ -842,7 +842,7 @@ reduce exp = match
                     uniqueWheres <- traverse (transformBiM toUnique) wheres
 
                     let result = letWrap (mapMaybe patExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
-                    replaceRelative targetFunctionPath result
+                    replaceRelative Nothing targetFunctionPath result
           in
           if any isNothing headArgs
             then error "not fully applied!" -- TODO: Handle partial application
@@ -880,7 +880,7 @@ reduce exp = match
               (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
 
               inexhaustivePatternMatch :: EvaluateM ReductionResult
-              inexhaustivePatternMatch = replaceSelf $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add function name to error
+              inexhaustivePatternMatch = replaceSelf Nothing $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add function name to error
 
               runHandler
                 :: (Int, [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess))
@@ -906,7 +906,7 @@ reduce exp = match
                     uniqueWheres <- traverse (transformBiM toUnique) wheres
 
                     let result = letWrap (mapMaybe patExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
-                    replaceRelative targetFunctionPath result
+                    replaceRelative Nothing targetFunctionPath result
           in
           if any isNothing headArgs
             then error "not fully applied!" -- TODO: Handle partial application
@@ -922,8 +922,8 @@ reduce exp = match
           case (arg1, arg2) of
             (Just arg1, Just arg2) ->
               if whnf arg1
-                 then replaceRelative targetFunctionPath arg2 -- TODO: Implement seq!
-                 else replaceRelative targetFunctionPath arg2
+                 then replaceRelative Nothing targetFunctionPath arg2 -- TODO: Implement seq!
+                 else replaceRelative Nothing targetFunctionPath arg2
             _ -> error "not fully applied!" -- TODO: Handle partial application
 
       -- handle constructor application
@@ -934,7 +934,7 @@ reduce exp = match
               reduction <- reduceRelative path
               case reduction of
                 CannotReduce _ -> rest
-                NewlyReduced exp -> pure $ NewlyReduced exp
+                NewlyReduced _ exp -> pure reduction
             finish = pure $ CannotReduce (deann exp)
         in
         foldr tryArg finish (zip [0..] args)
