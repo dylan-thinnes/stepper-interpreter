@@ -606,24 +606,28 @@ isSimpleDecl (ValD (VarP from) (NormalB body) [])
         = True
         | FlattenedApps { func = ConE _, args } <- flattenApps exp
         = all (maybe True fullyReduced) args
-        | otherwise
+        | NotList <- expToIsList exp
         = False
+        | otherwise
+        = True
 isSimpleDecl _ = Nothing
 
+partitionSimpleDecls :: [Dec] -> ([(SimpleDecl, Dec)], [Dec])
+partitionSimpleDecls = partitionEithers . map eitherSimpleDecl
+  where
+    eitherSimpleDecl :: Dec -> Either (SimpleDecl, Dec) Dec
+    eitherSimpleDecl decl =
+      case isSimpleDecl decl of
+        Just simpleDecl -> Left (simpleDecl, decl)
+        Nothing -> Right decl
+
+applySimpleDecl :: SimpleDecl -> Exp -> Exp
+applySimpleDecl (VarRename from to) exp = replaceName from to exp
+applySimpleDecl (FullyReduced from to) exp = replaceName' from to exp
+
 letWrap :: [Dec] -> Exp -> Exp
-letWrap decls e =
-  let getSimplicity decl = maybe (Right decl) Left $ isSimpleDecl decl
-
-      (simpleDecls, complexDecls) = partitionEithers $ map getSimplicity decls
-
-      applySimpleDecl :: SimpleDecl -> Exp -> Exp
-      applySimpleDecl (VarRename from to) exp = replaceName from to exp
-      applySimpleDecl (FullyReduced from to) exp = replaceName' from to exp
-  in
-  case (simpleDecls, complexDecls) of
-    ([], []) -> e
-    ([], _) -> LetE complexDecls e
-    (_, _) -> foldr applySimpleDecl (letWrap complexDecls e) simpleDecls
+letWrap [] exp = exp
+letWrap decls exp = LetE decls exp
 
 nameUsedIn :: forall from. (Data from, Biplate from Name) => from -> Name -> Bool
 nameUsedIn exp name = name `elem` collectNames @from exp
@@ -647,8 +651,10 @@ whnf exp
   = True
   | FlattenedApps { func = ConE _ } <- flattenApps exp
   = True
-  | otherwise
+  | NotList <- expToIsList exp
   = False
+  | otherwise
+  = True
 
 reduce :: Fix (RecKey Exp) -> EvaluateM ReductionResult
 reduce exp = match
@@ -694,7 +700,7 @@ reduce exp = match
 
       -- remove let statements when appropriate
       | LetEF decls (bodyIdx, body) <- keyed expf
-      = let extractMatchingPat orig@(ValD pat (NormalB exp) _) -- TODO: handle guards
+      , let extractMatchingPat orig@(ValD pat (NormalB exp) _) -- TODO: handle guards
               | VarP _ <- pat
               = Left orig
               | Right matches <- matchPatKeyed pat exp
@@ -703,33 +709,34 @@ reduce exp = match
 
             matchingPats :: [Either Dec MatchSuccess]
             matchingPats = map extractMatchingPat decls
+      , any isRight matchingPats
+      = let explodedMatchingPats :: [Dec]
+            explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
         in
-        if any isRight matchingPats
-        then
-          let explodedMatchingPats :: [Dec]
-              explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
-          in
-          replaceSelf $ letWrap explodedMatchingPats (deann body)
-        else
-          let remainingDecls :: [Dec]
-              remainingDecls = map snd $ filter isDeclLiving $ zip [0..] decls
+        replaceSelf $ letWrap explodedMatchingPats (deann body)
+      | LetEF decls (bodyIdx, body) <- keyed expf
+      , let remainingDecls :: [Dec]
+            remainingDecls = map snd $ filter isDeclLiving $ zip [0..] decls
 
-              isDeclLiving :: (Int, Dec) -> Bool
-              isDeclLiving (idx, decl) =
-                let livesInBody = isDeclLivingIn (deann @Exp body) decl
-                    nonSelfDecls = removeList idx decls
-                    livesInOtherDecls = any (isDeclInDec decl) nonSelfDecls
-                in
-                livesInBody || livesInOtherDecls
+            isDeclLiving :: (Int, Dec) -> Bool
+            isDeclLiving (idx, decl) =
+              let livesInBody = isDeclLivingIn (deann @Exp body) decl
+                  nonSelfDecls = removeList idx decls
+                  livesInOtherDecls = any (isDeclInDec decl) nonSelfDecls
+              in
+              livesInBody || livesInOtherDecls
 
-              isDeclInDec :: Dec -> Dec -> Bool
-              isDeclInDec decl (ValD _ body decs) = isDeclLivingIn body decl || any (`isDeclLivingIn` decl) decs
-              isDeclInDec decl (FunD _ clauses) = any (`isDeclLivingIn` decl) clauses
-              isDeclInDec decl _ = False
-          in
-          if length remainingDecls < length decls
-            then replaceSelf $ letWrap remainingDecls (deann body)
-            else reduceRelative [bodyIdx]
+            isDeclInDec :: Dec -> Dec -> Bool
+            isDeclInDec decl (ValD _ body decs) = isDeclLivingIn body decl || any (`isDeclLivingIn` decl) decs
+            isDeclInDec decl (FunD _ clauses) = any (`isDeclLivingIn` decl) clauses
+            isDeclInDec decl _ = False
+      , length remainingDecls < length decls
+      = replaceSelf $ letWrap remainingDecls (deann body)
+      | LetEF decls (bodyIdx, body) <- keyed expf
+      , (simpleDecl:rest, complexDecls) <- partitionSimpleDecls decls
+      = replaceSelf $ letWrap (map snd rest ++ complexDecls) (applySimpleDecl (fst simpleDecl) (deann body))
+      | LetEF decls (bodyIdx, body) <- keyed expf
+      = reduceRelative [bodyIdx]
 
       -- handle if statements
       | (CondEF (condIdx, cond) (_, true) (_, false)) <- keyed expf
