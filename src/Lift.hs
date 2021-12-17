@@ -237,5 +237,8 @@ transformAllNames = transformBi
 replaceName :: (DD.Data from, Biplate from Name) => Name -> Name -> from -> from
 replaceName from to = transformAllNames (\name -> if name == from then to else name)
 
+replaceName' :: (DD.Data from, Biplate from Exp) => Name -> Exp -> from -> from
+replaceName' from to = transformBi (\name -> if name == VarE from then to else name)
+
 deriving instance DD.Data a => DD.Data (ExpF a)
 deriving instance DD.Data a => DD.Data (PatF a)

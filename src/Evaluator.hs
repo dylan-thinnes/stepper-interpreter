@@ -590,16 +590,33 @@ incrementName (OccName occ) = OccName modified
 
 -- TODO: This let-pruning has a bug: may misorder replacements
 -- e.g. let b = a; c = b in c => let c = b in c => b
+data SimpleDecl = VarRename Name Name | FullyReduced Name Exp
+
+isSimpleDecl :: Dec -> Maybe SimpleDecl
+isSimpleDecl (ValD (VarP from) (NormalB body) [])
+  | Just to <- getVarExp body
+  = Just $ VarRename from to
+  | fullyReduced body
+  = Just $ FullyReduced from body
+    where
+      fullyReduced exp
+        | LitE _ <- exp
+        = True
+        | FlattenedApps { func = ConE _, args } <- flattenApps exp
+        = all (maybe True fullyReduced) args
+        | otherwise
+        = False
+isSimpleDecl _ = Nothing
+
 letWrap :: [Dec] -> Exp -> Exp
 letWrap decls e =
-  let getSimplicity (ValD (VarP from) (NormalB possiblyVarTo) [])
-        | Just to <- getVarExp possiblyVarTo = Left (from, to)
-      getSimplicity decl = Right decl
+  let getSimplicity decl = maybe (Right decl) Left $ isSimpleDecl decl
 
       (simpleDecls, complexDecls) = partitionEithers $ map getSimplicity decls
 
-      applySimpleDecl :: (Name, Name) -> Exp -> Exp
-      applySimpleDecl (from, to) exp = replaceName from to exp
+      applySimpleDecl :: SimpleDecl -> Exp -> Exp
+      applySimpleDecl (VarRename from to) exp = replaceName from to exp
+      applySimpleDecl (FullyReduced from to) exp = replaceName' from to exp
   in
   case (simpleDecls, complexDecls) of
     ([], []) -> e
