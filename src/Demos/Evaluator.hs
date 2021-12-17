@@ -154,6 +154,13 @@ run' decsQ = do
   let Just (ValueDeclaration _ (NormalB exp) _) = lookupDefinitionRaw "exp" env
   run env exp
 
+matchesIgnore :: ReductionResult -> Bool
+matchesIgnore (NewlyReduced (Just reason) _) = any (reason ==) ignoreList
+  where
+  ignoreList :: [String]
+  ignoreList = ["Simplify simple decl"]
+matchesIgnore _ = False
+
 run :: Environment -> Exp -> IO (Either String ReductionResult)
 run env exp = do
   putStrLn "Starting environment:"
@@ -169,7 +176,10 @@ run env exp = do
   oneStep reductionSteps
   where
   reductionSteps :: [Either String ReductionResult]
-  reductionSteps = takeWhile (either (const True) (not . isCannotReduce)) steps
+  reductionSteps
+    = filter (either (const True) (not . matchesIgnore))
+    $ takeWhile (either (const True) (not . isCannotReduce))
+      steps
 
   steps :: [Either String ReductionResult]
   steps = iterate (\exp -> evaluate env =<< fmap getRedRes exp) (Right $ NewlyReduced Nothing exp)
