@@ -172,13 +172,16 @@ run env exp = do
   reductionSteps = takeWhile (either (const True) (not . isCannotReduce)) steps
 
   steps :: [Either String ReductionResult]
-  steps = iterate (\exp -> evaluate env =<< fmap getRedRes exp) (Right $ NewlyReduced exp)
+  steps = iterate (\exp -> evaluate env =<< fmap getRedRes exp) (Right $ NewlyReduced Nothing exp)
 
   printExp :: Either String ReductionResult -> IO ()
   printExp (Left err) =
     putStr $ "Error: " ++ err
   printExp (Right redRes) = do
     putStrLn "============"
+    case redRes of
+      NewlyReduced (Just reason) _ -> putStrLn $ "Reason: " ++ reason
+      _ -> pure ()
     let source = P.pprint $ P.cleanNames (getRedRes redRes)
     highlighted <- readProcess "batcat" (words "--theme zenburn -l haskell -pp --color always -") source
     putStr highlighted
