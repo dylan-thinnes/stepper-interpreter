@@ -337,12 +337,14 @@ data Declarable
   = FunctionDeclaration FunctionDeclaration -- let f <1st clause>; f <2nd clause> ...
   | ValueDeclaration Pat Body [Dec] -- let <pat> = <body> where <...decs>
   | DataField Pat Name -- field for a datatype, e.g. MyDatatype { myField :: Int }
+  | Seq
   deriving (Show)
 
 debugDeclarable :: Declarable -> String
 debugDeclarable (FunctionDeclaration funDecl) = debugFunctionDeclaration funDecl
 debugDeclarable (ValueDeclaration pat body decs) = "Value: " ++ pprint (ValD pat body decs)
 debugDeclarable (DataField pat name) = concat ["DataField: field \"", pprint name, "\" in ", pprint pat]
+debugDeclarable Seq = "Seq: Seq"
 
 data FunctionDeclaration
   = ClausesFD [Clause]
@@ -369,7 +371,7 @@ nameToFullAndRaw :: Name -> (EnvName, EnvName)
 nameToFullAndRaw fullName@(Name (OccName rawName) _) = (FullName fullName, RawName rawName)
 
 defaultEnvironment :: Environment
-defaultEnvironment = mkEnvironment [('(+), plus), ('(*), times)]
+defaultEnvironment = mkEnvironment [('(+), plus), ('(*), times), ('seq, Seq)]
   where
     plus = FunctionDeclaration $ CustomFD 2 (CustomShow "(+)" handler')
       where
@@ -639,6 +641,15 @@ getVarExp (VarE name) = Just name
 getVarExp (UnboundVarE name) = Just name
 getVarExp _ = Nothing
 
+whnf :: Exp -> Bool
+whnf exp
+  | LitE _ <- exp
+  = True
+  | FlattenedApps { func = ConE _ } <- flattenApps exp
+  = True
+  | otherwise
+  = False
+
 reduce :: Fix (RecKey Exp) -> EvaluateM ReductionResult
 reduce exp = match
   where
@@ -893,6 +904,20 @@ reduce exp = match
           if any isNothing headArgs
             then error "not fully applied!" -- TODO: Handle partial application
             else foldr runHandler inexhaustivePatternMatch (zip [0..] handlers)
+
+        LookupVariableFound Seq ->
+          let arg1, arg2 :: Maybe Exp
+              (arg1:arg2:_) = map (fmap deann) args
+
+              targetFunctionPath :: ExpKey
+              (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc 2 intermediateFuncs
+          in
+          case (arg1, arg2) of
+            (Just arg1, Just arg2) ->
+              if whnf arg1
+                 then replaceRelative targetFunctionPath arg2 -- TODO: Implement seq!
+                 else replaceRelative targetFunctionPath arg2
+            _ -> error "not fully applied!" -- TODO: Handle partial application
 
       -- handle constructor application
       | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys $ deann @Exp exp)
