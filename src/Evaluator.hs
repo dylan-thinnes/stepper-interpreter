@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DeriveLift #-}
@@ -12,6 +13,7 @@
 {-# LANGUAGE TypeFamilies #-}
 module Evaluator where
 
+import "base" Control.Applicative
 import "base" Control.Monad (zipWithM, ap)
 import "base" Data.Foldable (fold, toList)
 import "base" Data.Function ((&))
@@ -45,6 +47,9 @@ import "pretty" Text.PrettyPrint.Annotated (renderSpans)
 import "template-haskell" Language.Haskell.TH
 import "template-haskell" Language.Haskell.TH.Syntax (Lift(..), Name(..), NameFlavour(..), OccName(..))
 
+import "transformers" Control.Monad.Trans.Maybe qualified as MT
+import "transformers" Control.Monad.Trans.Class qualified as MT
+
 import "uniplate" Data.Generics.Uniplate.Data
 
 import "recursion-schemes" Data.Functor.Foldable qualified as R
@@ -65,6 +70,9 @@ updateList f idx xs = map (\(i, x) -> if i == idx then f x else x) (zip [0..] xs
 
 removeList :: Int -> [a] -> [a]
 removeList idx xs = concatMap (\(i, x) -> if i == idx then [] else [x]) (zip [0..] xs)
+
+hoistMT :: Applicative m => Maybe a -> MT.MaybeT m a
+hoistMT = MT.MaybeT . pure
 
 -- ============================ PATTERN MATCHING
 
@@ -657,8 +665,11 @@ whnf exp
   = True
 
 reduce :: Fix (RecKey Exp) -> EvaluateM ReductionResult
-reduce exp = match
+reduce exp = maybe (error noMatchMsg) id <$> match
   where
+    noMatchMsg :: String
+    noMatchMsg = "reduce: Can't match " ++ pprint (deann @Exp exp) ++ ", AST: " ++ show (deann @Exp exp)
+
     Fix (Pair (Const globalPath) expf) = exp
 
     cannotReduce :: EvaluateM ReductionResult
@@ -686,71 +697,96 @@ reduce exp = match
         CondEF (targetIdx, target) _ _ -> Just [targetIdx]
         _ -> Nothing
 
-    match :: EvaluateM ReductionResult
+    match :: EvaluateM (Maybe ReductionResult)
+    match = do
+      alternatives <- sequence
+        [ sequence matchForcesViaCase
+        , sequence matchLiterals
+        , sequence matchLet
+        , sequence matchCond
+        , sequence matchCase
+        , MT.runMaybeT matchFunctionApplication
+        ]
+      pure $ foldr (<|>) empty alternatives
 
-    match
+    matchForcesViaCase
       | Just targetPath <- forcesViaCase (deann exp)
       , Just (env, subexp) <- envExpAt defaultEnvironment (deann exp) targetPath
       , LetE decs body <- subexp
-      = replaceSelf Nothing $ letWrap decs $ modExpByKey (const body) targetPath (deann exp)
+      = Just $ replaceSelf Nothing $ letWrap decs $ modExpByKey (const body) targetPath (deann exp)
+      | otherwise
+      = empty
 
-      -- can't reduce literals
+    -- can't reduce literals
+    matchLiterals
       | LitEF _ <- expf
-      = cannotReduce
+      = Just cannotReduce
+      | otherwise
+      = empty
 
-      -- remove let statements when appropriate
+    -- modify let statements when appropriate
+    matchLet
       | LetEF decls (bodyIdx, body) <- keyed expf
-      , let extractMatchingPat orig@(ValD pat (NormalB exp) _) -- TODO: handle guards
-              | VarP _ <- pat
-              = Left orig
-              | Right matches <- matchPatKeyed pat exp
-              = Right matches
-            extractMatchingPat orig = Left orig
+      = Just
+      $ if
+          | let extractMatchingPat orig@(ValD pat (NormalB exp) _) -- TODO: handle guards
+                  | VarP _ <- pat
+                  = Left orig
+                  | Right matches <- matchPatKeyed pat exp
+                  = Right matches
+                extractMatchingPat orig = Left orig
 
-            matchingPats :: [Either Dec MatchSuccess]
-            matchingPats = map extractMatchingPat decls
-      , any isRight matchingPats
-      = let explodedMatchingPats :: [Dec]
-            explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
-        in
-        replaceSelf Nothing $ letWrap explodedMatchingPats (deann body)
-      | LetEF decls (bodyIdx, body) <- keyed expf
-      , let remainingDecls :: [Dec]
-            remainingDecls = map snd $ filter isDeclLiving $ zip [0..] decls
+                matchingPats :: [Either Dec MatchSuccess]
+                matchingPats = map extractMatchingPat decls
+          , any isRight matchingPats
+          -> let explodedMatchingPats :: [Dec]
+                 explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
+             in
+             replaceSelf Nothing $ letWrap explodedMatchingPats (deann body)
+          | LetEF decls (bodyIdx, body) <- keyed expf
+          , let remainingDecls :: [Dec]
+                remainingDecls = map snd $ filter isDeclLiving $ zip [0..] decls
 
-            isDeclLiving :: (Int, Dec) -> Bool
-            isDeclLiving (idx, decl) =
-              let livesInBody = isDeclLivingIn (deann @Exp body) decl
-                  nonSelfDecls = removeList idx decls
-                  livesInOtherDecls = any (isDeclInDec decl) nonSelfDecls
-              in
-              livesInBody || livesInOtherDecls
+                isDeclLiving :: (Int, Dec) -> Bool
+                isDeclLiving (idx, decl) =
+                  let livesInBody = isDeclLivingIn (deann @Exp body) decl
+                      nonSelfDecls = removeList idx decls
+                      livesInOtherDecls = any (isDeclInDec decl) nonSelfDecls
+                  in
+                  livesInBody || livesInOtherDecls
 
-            isDeclInDec :: Dec -> Dec -> Bool
-            isDeclInDec decl (ValD _ body decs) = isDeclLivingIn body decl || any (`isDeclLivingIn` decl) decs
-            isDeclInDec decl (FunD _ clauses) = any (`isDeclLivingIn` decl) clauses
-            isDeclInDec decl _ = False
-      , length remainingDecls < length decls
-      = replaceSelf Nothing $ letWrap remainingDecls (deann body)
-      | LetEF decls (bodyIdx, body) <- keyed expf
-      , (simpleDecl:rest, complexDecls) <- partitionSimpleDecls decls
-      = replaceSelf (Just "Simplify simple decl") $ letWrap (map snd rest ++ complexDecls) (applySimpleDecl (fst simpleDecl) (deann body))
-      | LetEF decls (bodyIdx, body) <- keyed expf
-      = reduceRelative [bodyIdx]
+                isDeclInDec :: Dec -> Dec -> Bool
+                isDeclInDec decl (ValD _ body decs) = isDeclLivingIn body decl || any (`isDeclLivingIn` decl) decs
+                isDeclInDec decl (FunD _ clauses) = any (`isDeclLivingIn` decl) clauses
+                isDeclInDec decl _ = False
+          , length remainingDecls < length decls
+          -> replaceSelf Nothing $ letWrap remainingDecls (deann body)
+          | (simpleDecl:rest, complexDecls) <- partitionSimpleDecls decls
+          -> replaceSelf (Just "Simplify simple decl") $ letWrap (map snd rest ++ complexDecls) (applySimpleDecl (fst simpleDecl) (deann body))
+          | otherwise
+          -> reduceRelative [bodyIdx]
+      | otherwise
+      = empty
 
-      -- handle if statements
+    -- handle if statements
+    matchCond
       | (CondEF (condIdx, cond) (_, true) (_, false)) <- keyed expf
-      = case matchPatKeyed (ConP 'True []) (deann cond) of
+      = Just
+      $ case matchPatKeyed (ConP 'True []) (deann cond) of
           Right _ -> replaceSelf Nothing $ deann true
           Left (Mismatch _) -> replaceSelf Nothing $ deann false
           Left (NeedsReduction (patKey, expKey)) ->
             reduceRelative (condIdx : expKey)
           Left (UnexpectedErrorMatch _ _) ->
             throwError "CondE: Unexpected error in matching process - this should not happen!"
+      | otherwise
+      = empty
 
-      -- handle case statements
+    -- handle case statements
+    matchCase
       | (CaseEF (targetIdx, target) branches) <- keyed expf
-      = let
+      = Just
+      $ let
           noBranchesLeft = replaceSelf Nothing $(lift =<< [e| error "Inexhaustive pattern match." |])
           handleBranch (ii, branch) tryNext
             = let Match pat matchBody decls = branch
@@ -769,175 +805,178 @@ reduce exp = match
                   error "Unexpected error in matching process - this should not happen!"
         in
         foldr handleBranch noBranchesLeft (zip [0..] branches)
-
-      -- handle function application
-      | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys $ deann @Exp exp)
-      , Just name <- getVarExp $ deann func
-      = do
-      declaration <- lookupVariable name
-      case declaration of
-        -- TODO: handle failed lookup
-        -- TODO: handle when looked-up var is not a function
-        LookupVariableNodeMissing -> throwError $ "Couldn't find target node, this is a serious error, please contact." -- TODO: Classify error severity
-        LookupVariableNotFound env target -> throwError $ "Couldn't find variable " ++ show name ++ "\n  at node: " ++ pprint target ++ "\n  rep: " ++ show target ++ "\n  in environment: " ++ debugEnvironment env
-        LookupVariableFound (ValueDeclaration pat body wheres) -> -- TODO: handle lookup of a lambda (probably means an error in flattenApps)
-          let Fix (Pair (Const funcIdx) _) = func
-              NormalB bodyExp = body -- TODO: handle guards
-              VarP name = pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
-          in
-          replaceRelative Nothing funcIdx $ letWrap wheres bodyExp
-        LookupVariableFound (DataField pat name) ->
-          let cardinality :: Int
-              cardinality = 1
-
-              clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)
-              clauseToHandler (Clause pats body wheres) args =
-                let NormalB expBody = body -- TODO: Handle guards
-                    clauseMatches = zip [0..] $ zipWith matchPatKeyed pats args
-                    go [] = Right []
-                    go ((_, Right matches):rest) = (matches ++) <$> go rest
-                    go ((i, Left err):rest) = Left (i, err)
-                in
-                case go clauseMatches of
-                  Left err -> Left err
-                  Right bindings -> Right (expBody, wheres, bindings)
-
-              singleClause :: Clause
-              singleClause = Clause [pat] (NormalB $ VarE name) []
-
-              handlers :: [[Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)]
-              handlers = [clauseToHandler singleClause]
-
-              headArgs, remainingArgs :: [Maybe Exp]
-              headArgs = take cardinality $ map (fmap deann) args
-              remainingArgs = drop cardinality $ map (fmap deann) args
-
-              targetFunctionPath :: ExpKey
-              (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
-
-              inexhaustivePatternMatch :: EvaluateM ReductionResult
-              inexhaustivePatternMatch = replaceSelf Nothing $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add data constructor name to errors
-
-              runHandler
-                :: (Int, [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess))
-                -> EvaluateM ReductionResult
-                -> EvaluateM ReductionResult
-              runHandler (ii, handler) rest =
-                case handler (fromJust <$> headArgs) of
-                  Left (argIdx, NeedsReduction (_, argSubPath)) -> do
-                    --emitLog $ show argIdx ++ "th argument needs further reduction"
-                    let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
-                    reduceRelative (path ++ argSubPath) -- TODO: Do we need to handle CannotReduce?
-                  Left (argIdx, Mismatch _) -> do
-                    --emitLog $ show argIdx ++ "th clause did not match"
-                    rest
-                  -- TODO: Handle other kinds of failure
-                  Right (expression, wheres, bindings) -> do
-                    let boundNames = concatMap (collectNames . fst) bindings
-                    let toUnique name = if name `elem` boundNames then makeUniqueName name else pure name
-
-                    -- warning: undecipherable lens magic:
-                    uniqueBindings <- bindings & L.traverse . L._1 L.%%~ transformBiM toUnique
-                    uniqueExpression <- transformBiM toUnique expression
-                    uniqueWheres <- traverse (transformBiM toUnique) wheres
-
-                    let result = letWrap (mapMaybe patExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
-                    replaceRelative Nothing targetFunctionPath result
-          in
-          if any isNothing headArgs
-            then error "not fully applied!" -- TODO: Handle partial application
-            else foldr runHandler inexhaustivePatternMatch (zip [0..] handlers)
-        LookupVariableFound (FunctionDeclaration definition) ->
-          let cardinality :: Int
-              cardinality =
-                case definition of
-                  CustomFD cardinality _ -> cardinality
-                  ClausesFD (Clause pats _ _:_) -> length pats -- function definitions should have at least one clause
-
-              clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)
-              clauseToHandler (Clause pats body wheres) args =
-                let NormalB expBody = body -- TODO: Handle guards
-                    clauseMatches = zip [0..] $ zipWith matchPatKeyed pats args
-                    go [] = Right []
-                    go ((_, Right matches):rest) = (matches ++) <$> go rest
-                    go ((i, Left err):rest) = Left (i, err)
-                in
-                case go clauseMatches of
-                  Left err -> Left err
-                  Right bindings -> Right (expBody, wheres, bindings)
-
-              handlers :: [[Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)]
-              handlers =
-                case definition of
-                  CustomFD _ handler -> [(fmap . fmap) (,[],[]) (unCustomShow handler)]
-                  ClausesFD clauses -> map clauseToHandler clauses
-
-              headArgs, remainingArgs :: [Maybe Exp]
-              headArgs = take cardinality $ map (fmap deann) args
-              remainingArgs = drop cardinality $ map (fmap deann) args
-
-              targetFunctionPath :: ExpKey
-              (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
-
-              inexhaustivePatternMatch :: EvaluateM ReductionResult
-              inexhaustivePatternMatch = replaceSelf Nothing $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add function name to error
-
-              runHandler
-                :: (Int, [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess))
-                -> EvaluateM ReductionResult
-                -> EvaluateM ReductionResult
-              runHandler (ii, handler) tryRest =
-                case handler (fromJust <$> headArgs) of
-                  Left (argIdx, NeedsReduction (_, argSubPath)) -> do
-                    --emitLog $ show argIdx ++ "th argument needs further reduction"
-                    let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
-                    reduceRelative (path ++ argSubPath) -- TODO: Do we need to handle CannotReduce?
-                  Left (argIdx, Mismatch _) -> do
-                    --emitLog $ show argIdx ++ "th clause did not match"
-                    tryRest
-                  -- TODO: Handle other kinds of failure
-                  Right (expression, wheres, bindings) -> do
-                    let boundNames = concatMap (collectNames . fst) bindings
-                    let toUnique name = if name `elem` boundNames then makeUniqueName name else pure name
-
-                    -- warning: undecipherable lens magic:
-                    uniqueBindings <- bindings & L.traverse . L._1 L.%%~ transformBiM toUnique
-                    uniqueExpression <- transformBiM toUnique expression
-                    uniqueWheres <- traverse (transformBiM toUnique) wheres
-
-                    let result = letWrap (mapMaybe patExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
-                    replaceRelative Nothing targetFunctionPath result
-          in
-          if any isNothing headArgs
-            then error "not fully applied!" -- TODO: Handle partial application
-            else foldr runHandler inexhaustivePatternMatch (zip [0..] handlers)
-
-        LookupVariableFound Seq ->
-          let arg1, arg2 :: Maybe Exp
-              (arg1:arg2:_) = map (fmap deann) args
-
-              targetFunctionPath :: ExpKey
-              (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc 2 intermediateFuncs
-          in
-          case (arg1, arg2) of
-            (Just arg1, Just arg2) ->
-              if whnf arg1
-                 then replaceRelative Nothing targetFunctionPath arg2 -- TODO: Implement seq!
-                 else replaceRelative Nothing targetFunctionPath arg2
-            _ -> error "not fully applied!" -- TODO: Handle partial application
-
-      -- handle constructor application
-      | FlattenedApps { func, args, intermediateFuncs } <- flattenAppsKeyed (annKeys $ deann @Exp exp)
-      , ConE _ <- deann func
-      = let tryArg (i, Nothing) rest = rest
-            tryArg (i, Just (Fix (Pair (Const path) _))) rest = do
-              reduction <- reduceRelative path
-              case reduction of
-                CannotReduce _ -> rest
-                NewlyReduced _ exp -> pure reduction
-            finish = pure $ CannotReduce (deann exp)
-        in
-        foldr tryArg finish (zip [0..] args)
-
       | otherwise
-      = error $ "reduce: Can't match " ++ pprint (deann @Exp exp) ++ ", AST: " ++ show (deann @Exp exp)
+      = empty
+
+    -- handle function application
+    matchFunctionApplication = do
+      FlattenedApps { func, args, intermediateFuncs } <- pure $ flattenAppsKeyed (annKeys $ deann @Exp exp)
+      if
+        | Just name <- getVarExp $ deann func
+        -> do
+          declaration <- MT.lift $ lookupVariable name
+          case declaration of
+            -- TODO: handle failed lookup
+            -- TODO: handle when looked-up var is not a function
+            LookupVariableNodeMissing -> MT.lift $ throwError $ "Couldn't find target node, this is a serious error, please contact." -- TODO: Classify error severity
+            LookupVariableNotFound env target -> MT.lift $ throwError $ "Couldn't find variable " ++ show name ++ "\n  at node: " ++ pprint target ++ "\n  rep: " ++ show target ++ "\n  in environment: " ++ debugEnvironment env
+            LookupVariableFound (ValueDeclaration pat body wheres)
+              -- TODO: handle lookup of a lambda (probably means an error in flattenApps)
+              | Fix (Pair (Const funcIdx) _) <- func
+              , NormalB bodyExp <- body -- TODO: handle guards
+              , VarP name <- pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
+              -> MT.lift $ replaceRelative Nothing funcIdx $ letWrap wheres bodyExp
+            LookupVariableFound (DataField pat name) -> MT.lift $
+              let cardinality :: Int
+                  cardinality = 1
+
+                  clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)
+                  clauseToHandler (Clause pats body wheres) args =
+                    let NormalB expBody = body -- TODO: Handle guards
+                        clauseMatches = zip [0..] $ zipWith matchPatKeyed pats args
+                        go [] = Right []
+                        go ((_, Right matches):rest) = (matches ++) <$> go rest
+                        go ((i, Left err):rest) = Left (i, err)
+                    in
+                    case go clauseMatches of
+                      Left err -> Left err
+                      Right bindings -> Right (expBody, wheres, bindings)
+
+                  singleClause :: Clause
+                  singleClause = Clause [pat] (NormalB $ VarE name) []
+
+                  handlers :: [[Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)]
+                  handlers = [clauseToHandler singleClause]
+
+                  headArgs, remainingArgs :: [Maybe Exp]
+                  headArgs = take cardinality $ map (fmap deann) args
+                  remainingArgs = drop cardinality $ map (fmap deann) args
+
+                  targetFunctionPath :: ExpKey
+                  (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
+
+                  inexhaustivePatternMatch :: EvaluateM ReductionResult
+                  inexhaustivePatternMatch = replaceSelf Nothing $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add data constructor name to errors
+
+                  runHandler
+                    :: (Int, [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess))
+                    -> EvaluateM ReductionResult
+                    -> EvaluateM ReductionResult
+                  runHandler (ii, handler) rest =
+                    case handler (fromJust <$> headArgs) of
+                      Left (argIdx, NeedsReduction (_, argSubPath)) -> do
+                        --emitLog $ show argIdx ++ "th argument needs further reduction"
+                        let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
+                        reduceRelative (path ++ argSubPath) -- TODO: Do we need to handle CannotReduce?
+                      Left (argIdx, Mismatch _) -> do
+                        --emitLog $ show argIdx ++ "th clause did not match"
+                        rest
+                      -- TODO: Handle other kinds of failure
+                      Right (expression, wheres, bindings) -> do
+                        let boundNames = concatMap (collectNames . fst) bindings
+                        let toUnique name = if name `elem` boundNames then makeUniqueName name else pure name
+
+                        -- warning: undecipherable lens magic:
+                        uniqueBindings <- bindings & L.traverse . L._1 L.%%~ transformBiM toUnique
+                        uniqueExpression <- transformBiM toUnique expression
+                        uniqueWheres <- traverse (transformBiM toUnique) wheres
+
+                        let result = letWrap (mapMaybe patExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
+                        replaceRelative Nothing targetFunctionPath result
+              in
+              if any isNothing headArgs
+                then error "not fully applied!" -- TODO: Handle partial application
+                else foldr runHandler inexhaustivePatternMatch (zip [0..] handlers)
+            LookupVariableFound (FunctionDeclaration definition) -> MT.lift $
+              let cardinality :: Int
+                  cardinality =
+                    case definition of
+                      CustomFD cardinality _ -> cardinality
+                      ClausesFD (Clause pats _ _:_) -> length pats -- function definitions should have at least one clause
+
+                  clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)
+                  clauseToHandler (Clause pats body wheres) args =
+                    let NormalB expBody = body -- TODO: Handle guards
+                        clauseMatches = zip [0..] $ zipWith matchPatKeyed pats args
+                        go [] = Right []
+                        go ((_, Right matches):rest) = (matches ++) <$> go rest
+                        go ((i, Left err):rest) = Left (i, err)
+                    in
+                    case go clauseMatches of
+                      Left err -> Left err
+                      Right bindings -> Right (expBody, wheres, bindings)
+
+                  handlers :: [[Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)]
+                  handlers =
+                    case definition of
+                      CustomFD _ handler -> [(fmap . fmap) (,[],[]) (unCustomShow handler)]
+                      ClausesFD clauses -> map clauseToHandler clauses
+
+                  headArgs, remainingArgs :: [Maybe Exp]
+                  headArgs = take cardinality $ map (fmap deann) args
+                  remainingArgs = drop cardinality $ map (fmap deann) args
+
+                  targetFunctionPath :: ExpKey
+                  (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
+
+                  inexhaustivePatternMatch :: EvaluateM ReductionResult
+                  inexhaustivePatternMatch = replaceSelf Nothing $(lift =<< [e| error "Inexhaustive pattern match in function " |]) -- TODO add function name to error
+
+                  runHandler
+                    :: (Int, [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess))
+                    -> EvaluateM ReductionResult
+                    -> EvaluateM ReductionResult
+                  runHandler (ii, handler) tryRest =
+                    case handler (fromJust <$> headArgs) of
+                      Left (argIdx, NeedsReduction (_, argSubPath)) -> do
+                        --emitLog $ show argIdx ++ "th argument needs further reduction"
+                        let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
+                        reduceRelative (path ++ argSubPath) -- TODO: Do we need to handle CannotReduce?
+                      Left (argIdx, Mismatch _) -> do
+                        --emitLog $ show argIdx ++ "th clause did not match"
+                        tryRest
+                      -- TODO: Handle other kinds of failure
+                      Right (expression, wheres, bindings) -> do
+                        let boundNames = concatMap (collectNames . fst) bindings
+                        let toUnique name = if name `elem` boundNames then makeUniqueName name else pure name
+
+                        -- warning: undecipherable lens magic:
+                        uniqueBindings <- bindings & L.traverse . L._1 L.%%~ transformBiM toUnique
+                        uniqueExpression <- transformBiM toUnique expression
+                        uniqueWheres <- traverse (transformBiM toUnique) wheres
+
+                        let result = letWrap (mapMaybe patExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
+                        replaceRelative Nothing targetFunctionPath result
+              in
+              if any isNothing headArgs
+                then error "not fully applied!" -- TODO: Handle partial application
+                else foldr runHandler inexhaustivePatternMatch (zip [0..] handlers)
+
+            LookupVariableFound Seq -> MT.lift $
+              let arg1, arg2 :: Maybe Exp
+                  (arg1:arg2:_) = map (fmap deann) args
+
+                  targetFunctionPath :: ExpKey
+                  (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc 2 intermediateFuncs
+              in
+              case (arg1, arg2) of
+                (Just arg1, Just arg2) ->
+                  if whnf arg1
+                     then replaceRelative Nothing targetFunctionPath arg2 -- TODO: Implement seq!
+                     else replaceRelative Nothing targetFunctionPath arg2
+                _ -> error "not fully applied!" -- TODO: Handle partial application
+
+            _ -> hoistMT Nothing
+        | ConE _ <- deann func
+        -> MT.lift
+        $ let tryArg (i, Nothing) rest = rest
+              tryArg (i, Just (Fix (Pair (Const path) _))) rest = do
+                reduction <- reduceRelative path
+                case reduction of
+                  CannotReduce _ -> rest
+                  NewlyReduced _ exp -> pure reduction
+              finish = pure $ CannotReduce (deann exp)
+          in
+          foldr tryArg finish (zip [0..] args)
+        | otherwise
+        -> hoistMT empty

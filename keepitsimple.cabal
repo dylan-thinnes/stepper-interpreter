@@ -50,6 +50,7 @@ library
         process,
         recursion-schemes,
         template-haskell,
+        transformers,
         uniplate,
 
     hs-source-dirs:   src
