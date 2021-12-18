@@ -665,11 +665,8 @@ whnf exp
   = True
 
 reduce :: Fix (RecKey Exp) -> EvaluateM ReductionResult
-reduce exp = maybe (error noMatchMsg) id <$> match
+reduce exp = match
   where
-    noMatchMsg :: String
-    noMatchMsg = "reduce: Can't match " ++ pprint (deann @Exp exp) ++ ", AST: " ++ show (deann @Exp exp)
-
     Fix (Pair (Const globalPath) expf) = exp
 
     cannotReduce :: EvaluateM ReductionResult
@@ -697,7 +694,7 @@ reduce exp = maybe (error noMatchMsg) id <$> match
         CondEF (targetIdx, target) _ _ -> Just [targetIdx]
         _ -> Nothing
 
-    match :: EvaluateM (Maybe ReductionResult)
+    match :: EvaluateM ReductionResult
     match = do
       alternatives <- sequence
         [ sequence matchForcesViaCase
@@ -707,7 +704,12 @@ reduce exp = maybe (error noMatchMsg) id <$> match
         , sequence matchCase
         , MT.runMaybeT matchFunctionApplication
         ]
-      pure $ foldr (<|>) empty alternatives
+      case foldr (<|>) empty alternatives of
+        Just result -> pure result
+        Nothing -> error noMatchMsg
+      where
+        noMatchMsg :: String
+        noMatchMsg = "reduce: Can't match " ++ pprint (deann @Exp exp) ++ ", AST: " ++ show (deann @Exp exp)
 
     matchForcesViaCase
       | Just targetPath <- forcesViaCase (deann exp)
