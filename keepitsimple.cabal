@@ -38,6 +38,7 @@ library
     -- other-extensions:
     build-depends:
         base ^>=4.14.2.0,
+        array,
         containers,
         data-fix,
         data-hash,
