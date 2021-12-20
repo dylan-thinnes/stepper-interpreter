@@ -24,6 +24,8 @@ import "template-haskell" Language.Haskell.TH.Syntax
 
 import "uniplate" Data.Generics.Uniplate.Data qualified as B
 
+import Lift.Lift
+
 import Debug.Trace
 
 -- utils
@@ -32,13 +34,6 @@ snd3 (_, b, _) = b
 
 thd :: (a, b, c) -> c
 thd (_, _, c) = c
-
-deriving instance Lift NameSpace
-deriving instance Lift PkgName
-deriving instance Lift ModName
-deriving instance Lift NameFlavour
-deriving instance Lift OccName
-deriving instance Lift Name
 
 -- dependency graphs and their ops
 type DepGraph = M.Map Name (S.Set Name)
