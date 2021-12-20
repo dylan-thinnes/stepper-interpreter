@@ -195,3 +195,5 @@ replaceName' from to = transformBi (\name -> if name == VarE from then to else n
 
 deriving instance DD.Data a => DD.Data (ExpF a)
 deriving instance DD.Data a => DD.Data (PatF a)
+
+$(deriveBaseBiFamily [''Show, ''Functor, ''Generic] ''Exp)
