@@ -25,6 +25,7 @@ library
     exposed-modules:
         Evaluator,
         Lift,
+        Lift.BiKey,
         Lift.DataDeps,
         Lift.Lift,
         Ppr,
