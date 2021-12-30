@@ -1,4 +1,5 @@
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -135,7 +136,30 @@ nameUsedIn exp name = name `elem` collectNames @from exp
 collectNames :: forall from. (DD.Data from, Biplate from Name) => from -> [Name]
 collectNames = fst . transformBiM @_ @from @Name (\x -> ([x], x))
 
-mkGTuple :: [Name] -> Name -> [Type] -> Q Dec -- ([(Name, Name)], [Type])
+data GTuple = GTuple { decl :: Dec, to :: Exp, from :: Exp }
+  deriving (Show, Eq, Lift)
+
+toGTuple :: [Name] -> Name -> Type -> Q (Maybe GTuple)
+toGTuple derivs target outerType
+  | (TupleT n, args) <- flattenApps outerType
+  = do
+    (typeName, dataName, decl) <- mkGTuple derivs target args
+    bindArgs <- sequence $ replicate n (newName "x")
+    let to = LamE [TupP (map VarP bindArgs)] $ foldr AppE (ConE dataName) (map VarE bindArgs)
+    let from = LamE [ConP dataName (map VarP bindArgs)] $ TupE (map (Just . VarE) bindArgs)
+    pure $ Just $ GTuple { decl, to, from }
+  | otherwise
+  = pure Nothing
+  where
+    flattenApps = fmap reverse . go
+      where
+        go (AppT func arg) =
+          let (innerF, argList) = flattenApps func
+          in
+          (innerF, arg : argList)
+        go type_ = (type_, [])
+
+mkGTuple :: [Name] -> Name -> [Type] -> Q (Name, Name, Dec) -- ([(Name, Name)], [Type])
 mkGTuple derivs target spec = do
   let collectVars :: Type -> [Name]
       collectVars typ = [name | VarT name <- universe typ]
@@ -163,4 +187,4 @@ mkGTuple derivs target spec = do
           [NormalC dataName $ map bang replacedTypes]
           [DerivClause Nothing $ ConT <$> derivs]
 
-  pure definition
+  pure (typeName, dataName, definition)
