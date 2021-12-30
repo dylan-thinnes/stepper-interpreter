@@ -1,5 +1,9 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DeriveLift #-}
@@ -982,3 +986,17 @@ reduce exp = match
           foldr tryArg finish (zip [0..] args)
         | otherwise
         -> hoistMT empty
+
+  {-
+data MyA = A0 MyB | A1 (MyB, MyB) | A2 [MyC]
+  deriving (Show, Generic)
+data MyB = B0 Int | B1 MyA
+  deriving (Show, Generic)
+data MyC = C0 MyA MyA MyA | C1 MyB
+  deriving (Show, Generic)
+
+ex = A1 (B0 1, B1 (A0 (B0 5)))
+
+$(deriveBaseBiFamily [''Show, ''Functor, ''Generic] ''MyA)
+$(deriveBaseBiFamily [''Show, ''Functor, ''Generic] ''Exp)
+  -}

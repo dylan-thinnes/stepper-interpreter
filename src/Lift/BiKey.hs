@@ -1,10 +1,19 @@
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE DeriveLift #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 module Lift.BiKey where
 
 import "base" Data.Char
+import "base" Data.Data qualified as DD
+import "base" Data.Foldable (toList)
+import "base" Data.List
+import "base" Data.Maybe (fromMaybe)
 
 import "template-haskell" Language.Haskell.TH
 import "template-haskell" Language.Haskell.TH.Syntax
@@ -12,6 +21,8 @@ import "template-haskell" Language.Haskell.TH.Syntax
 import "uniplate" Data.Generics.Uniplate.Data
 
 import Lift.DataDeps
+
+import Debug.Trace
 
 extractOcc :: Name -> String
 extractOcc (Name (OccName str) _) = str
@@ -117,3 +128,39 @@ deriveBaseBiFamily derivs root = do
   let allEdges = [(super, idx, sub) | (super, subs) <- foldMap dgToList scc, (idx, sub) <- zip [0..] subs]
   allInstances <- traverse (deriveBaseBi derivs) allEdges
   pure $ concat allInstances
+
+nameUsedIn :: forall from. (DD.Data from, Biplate from Name) => from -> Name -> Bool
+nameUsedIn exp name = name `elem` collectNames @from exp
+
+collectNames :: forall from. (DD.Data from, Biplate from Name) => from -> [Name]
+collectNames = fst . transformBiM @_ @from @Name (\x -> ([x], x))
+
+mkGTuple :: [Name] -> Name -> [Type] -> Q Dec -- ([(Name, Name)], [Type])
+mkGTuple derivs target spec = do
+  let collectVars :: Type -> [Name]
+      collectVars typ = [name | VarT name <- universe typ]
+
+  let oldVars :: [Name]
+      oldVars = nub $ filter (/= target) $ concatMap collectVars spec
+
+  newVars <- traverse (newName . extractOcc) oldVars
+
+  holeVar <- newName "a"
+  let varPairs = zip oldVars newVars ++ [(target, holeVar)]
+
+  let replaceVar = transformBi @Type @Name $ \name -> fromMaybe name $ name `lookup` varPairs
+  let replacedTypes = map replaceVar spec
+
+  typeName <- newName "AuxGTuple"
+  dataName <- newName "AuxGTuple"
+
+  let bang typ = (Bang NoSourceUnpackedness NoSourceStrictness, typ)
+  let definition =
+        DataD []
+          typeName
+          (map (PlainTV . snd) varPairs)
+          Nothing
+          [NormalC dataName $ map bang replacedTypes]
+          [DerivClause Nothing $ ConT <$> derivs]
+
+  pure definition

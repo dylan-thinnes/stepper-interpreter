@@ -196,4 +196,24 @@ replaceName' from to = transformBi (\name -> if name == VarE from then to else n
 deriving instance DD.Data a => DD.Data (ExpF a)
 deriving instance DD.Data a => DD.Data (PatF a)
 
-$(deriveBaseBiFamily [''Show, ''Functor, ''Generic] ''Exp)
+data T a = T0 Int (Int, a) (U a) (T a) | T1 a
+  deriving (Generic1)
+data U a = U0 (T a) | U1 a
+  deriving (Generic1)
+
+data Mk3 a b c = Mk3 a b c
+  deriving (Generic1)
+
+data V a = V0 (a, a)
+  deriving (Show, Functor)
+
+type X a b = (Int, [a], (b, a))
+
+$(do
+  a <- runQ (newName "a")
+  b <- runQ (newName "b")
+  let p = AppT (AppT (AppT (TupleT 3) (ConT ''Int)) (AppT ListT (VarT a))) (AppT (AppT (TupleT 2) (VarT b)) (VarT a))
+  let (AppT (AppT (AppT _ t1) t2) t3) = p
+  dec <- mkGTuple [''Show, ''Generic1] a [t1, t2, t3]
+  pure [dec]
+  )
