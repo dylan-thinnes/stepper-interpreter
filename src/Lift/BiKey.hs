@@ -1,4 +1,5 @@
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -40,20 +41,20 @@ class RecursiveBi from to where
   embedBi :: BaseBi from to to -> from
   projectBi :: from -> BaseBi from to to
 
-convertName :: Int -> Name -> Q Name
-convertName idx name = pure $ mkName $ extractOcc name ++ suffix
+convertName :: (Int, Name) -> Name -> Q Name
+convertName (idx, sub) name = pure $ mkName $ extractOcc name ++ suffix
   where
-    suffix = if isInfix name then replicate (idx + 1) '$' else "FB" ++ show idx
+    suffix = if isInfix name then replicate (idx + 1) '$' else "FB" ++ extractOcc sub
     isInfix = all isSymbol . extractOcc
 
-convertCon :: Int -> Con -> Q Con
-convertCon idx con =
+convertCon :: (Int, Name) -> Con -> Q Con
+convertCon idxSub con =
   case con of
-    NormalC name types -> NormalC <$> (convertName idx name) <*> pure types
-    RecC name types -> RecC <$> (convertName idx name) <*> pure types
-    InfixC lt name rt -> InfixC <$> pure lt <*> (convertName idx name) <*> pure rt
-    GadtC names types finalType -> GadtC <$> (traverse (convertName idx) names) <*> pure types <*> pure finalType
-    RecGadtC names types finalType -> RecGadtC <$> (traverse (convertName idx) names) <*> pure types <*> pure finalType
+    NormalC name types -> NormalC <$> (convertName idxSub name) <*> pure types
+    RecC name types -> RecC <$> (convertName idxSub name) <*> pure types
+    InfixC lt name rt -> InfixC <$> pure lt <*> (convertName idxSub name) <*> pure rt
+    GadtC names types finalType -> GadtC <$> (traverse (convertName idxSub) names) <*> pure types <*> pure finalType
+    RecGadtC names types finalType -> RecGadtC <$> (traverse (convertName idxSub) names) <*> pure types <*> pure finalType
     _ -> pure con
 
 mkMatchBranch :: Bool -> (Con, Con) -> Q (Pat, Exp)
@@ -129,7 +130,10 @@ deriveBaseBi derivs (super, idx, sub) = do
 
   case dataD of
     DataD cxt name tyVarBndrs mkind cons deriv -> do
-      holed <- transformBiM (convertCon idx) $ transformBi convertSub cons
+      holed <-
+        transformBiM (convertCon (idx, sub))
+          . transformBi convertSub
+            =<< transformBiM (resolveTypeSynonym [''String, sub]) cons
 
       let extraDerivs = DerivClause Nothing $ map ConT derivs
 
@@ -152,6 +156,32 @@ deriveBaseBi derivs (super, idx, sub) = do
     TySynD name vars con -> pure []
     _ -> error $ "deriveBaseBi: Unsupported datatype: " ++ show dataD
 
+resolveTypeSynonym :: [Name] -> Type -> Q Type
+resolveTypeSynonym disallowed type_
+  | (ConT funcName) <- func
+  , funcName `notElem` disallowed
+  = reify funcName >>=
+    \case
+      TyConI (TySynD name vars synonymType) ->
+        let (actualArgs, additionalArgs) = splitAt (length vars) args
+            varNames = map unTyVarBndr vars
+            namesToActuals = zip varNames actualArgs
+            newTyp = flip transformBi synonymType $
+              \case
+                VarT name | Just actual <- lookup name namesToActuals -> actual
+                other -> other
+        in do
+        traceM ("Synonym: " ++ show synonymType)
+        traceM ("Result: " ++ show newTyp)
+        pure (foldr AppT newTyp additionalArgs)
+      _ -> pure type_
+  | otherwise
+  = pure type_
+  where
+    (func, args) = flattenAppTs type_
+    unTyVarBndr (PlainTV name) = name
+    unTyVarBndr (KindedTV name kind) = name
+
 deriveBaseBiFamily :: [Name] -> Name -> Q [Dec]
 deriveBaseBiFamily derivs root = do
   dg <- depGraph root
@@ -171,7 +201,7 @@ data GTuple = GTuple { gTupleDecl :: Dec, gTupleTo :: Exp, gTupleFrom :: Exp }
 
 toGTuple :: [Name] -> Name -> Type -> Q (Maybe GTuple)
 toGTuple derivs target outerType
-  | (TupleT n, args) <- flattenApps outerType
+  | (TupleT n, args) <- flattenAppTs outerType
   = do
     (typeName, dataName, gTupleDecl) <- mkGTuple derivs target args
     bindArgs <- sequence $ replicate n (newName "x")
@@ -180,14 +210,12 @@ toGTuple derivs target outerType
     pure $ Just $ GTuple { gTupleDecl, gTupleTo, gTupleFrom }
   | otherwise
   = pure Nothing
+
+flattenAppTs :: Type -> (Type, [Type])
+flattenAppTs = fmap reverse . go
   where
-    flattenApps = fmap reverse . go
-      where
-        go (AppT func arg) =
-          let (innerF, argList) = flattenApps func
-          in
-          (innerF, arg : argList)
-        go type_ = (type_, [])
+    go (AppT func arg) = (arg :) <$> go func
+    go type_ = (type_, [])
 
 mkGTuple :: [Name] -> Name -> [Type] -> Q (Name, Name, Dec) -- ([(Name, Name)], [Type])
 mkGTuple derivs target spec = do
