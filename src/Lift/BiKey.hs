@@ -1,4 +1,5 @@
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -19,6 +20,8 @@ import "base" Data.Foldable (toList)
 import "base" Data.List
 import "base" Data.Maybe (fromMaybe)
 import "base" GHC.Generics (Generic1(..))
+
+import "keys" Data.Key (Key(..), Keyed(..), keyed, Adjustable(..))
 
 import "template-haskell" Language.Haskell.TH
 import "template-haskell" Language.Haskell.TH.Syntax
@@ -246,3 +249,23 @@ mkGTuple derivs target spec = do
           [DerivClause Nothing $ ConT <$> derivs]
 
   pure (typeName, dataName, definition)
+
+data BiKey from to where
+  BKNil :: BiKey a a
+  (:::) ::
+    (BaseBi a b ~ base, Rep1 base ~ rep, Generic1 base, Keyed rep, Eq (Key rep), Show (Key rep), RecursiveBi a b)
+      => Key rep -> BiKey b c -> BiKey a c
+
+useRepKey :: forall f a key. (Generic1 f, Keyed (Rep1 f), Key (Rep1 f) ~ key, Eq key) => key -> (a -> a) -> f a -> f a
+useRepKey targetKey mod froma = to1 $ mapWithKey mod' $ from1 froma
+  where
+    mod' :: key -> a -> a
+    mod' key a = if key == targetKey then mod a else a
+
+mapBiKey :: forall from to. BiKey from to -> (to -> to) -> from -> from
+mapBiKey BKNil handler from = handler from
+mapBiKey ((head :: Key (Rep1 (BaseBi from b))) ::: rest) handler from = embedBi $ useRepKey head (mapBiKey rest handler) (projectBi @from @b from)
+
+instance Show (BiKey a b) where
+  show BKNil = "[]"
+  show (head ::: tail) = show head ++ " ::: " ++ show tail
