@@ -1,4 +1,6 @@
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -15,15 +17,19 @@ import "base" Data.Data qualified as DD
 import "base" Data.Foldable (toList)
 import "base" Data.List
 import "base" Data.Maybe (fromMaybe)
+import "base" GHC.Generics (Generic1(..))
 
 import "template-haskell" Language.Haskell.TH
 import "template-haskell" Language.Haskell.TH.Syntax
 
 import "uniplate" Data.Generics.Uniplate.Data
 
-import Lift.DataDeps
+import Lift.DataDeps hiding (thd)
 
 import Debug.Trace
+
+thd :: (a, b, c) -> c
+thd (a, b, c) = c
 
 extractOcc :: Name -> String
 extractOcc (Name (OccName str) _) = str
@@ -50,41 +56,64 @@ convertCon idx con =
     RecGadtC names types finalType -> RecGadtC <$> (traverse (convertName idx) names) <*> pure types <*> pure finalType
     _ -> pure con
 
-mkMatchBranch :: Int -> Bool -> Con -> Q (Pat, Exp)
-mkMatchBranch idx project (NormalC name fields) = do
+mkMatchBranch :: Bool -> (Con, Con) -> Q (Pat, Exp)
+mkMatchBranch project (NormalC origName _, NormalC changedName fields) = do
   args <- traverse (const $ newName "x") fields
+  tupleHandlers <- traverse (flipTupleHandler project) (map snd fields)
 
-  patName <- if project then pure name else convertName idx name
+  let patName = if project then origName else changedName
   let pat = ConP patName (map VarP args)
 
-  expName <- if project then convertName idx name else pure name
-  let exp = foldl AppE (ConE expName) (map VarE args)
+  let expName = if project then changedName else origName
+  let tupleHandledArgs = zipWith ($) tupleHandlers $ map VarE args
+  let exp = foldl AppE (ConE expName) tupleHandledArgs
 
   pure (pat, exp)
-mkMatchBranch idx project (RecC name namedFields) = do
+mkMatchBranch project (RecC origName _, RecC changedName namedFields) = do
   args <- traverse (\(name, _, _) -> newName $ extractOcc name) namedFields
+  tupleHandlers <- traverse (flipTupleHandler project) (map thd namedFields)
 
-  patName <- if project then pure name else convertName idx name
+  let patName = if project then origName else changedName
   let pat = ConP patName (map VarP args)
 
-  expName <- if project then convertName idx name else pure name
-  let exp = foldl AppE (ConE expName) (map VarE args)
+  let expName = if project then changedName else origName
+  let tupleHandledArgs = zipWith ($) tupleHandlers $ map VarE args
+  let exp = foldl AppE (ConE expName) tupleHandledArgs
 
   pure (pat, exp)
-mkMatchBranch idx project (InfixC lt name rt) = do
+mkMatchBranch project (InfixC _ origName _, InfixC (_, lt) changedName (_, rt)) = do
   larg <- newName "x"
+  lTupleHandler <- flipTupleHandler project lt
   rarg <- newName "y"
+  rTupleHandler <- flipTupleHandler project rt
 
-  patName <- if project then pure name else convertName idx name
+  let patName = if project then origName else changedName
   let pat = InfixP (VarP larg) patName (VarP rarg)
 
-  expName <- if project then convertName idx name else pure name
-  let exp = InfixE (Just $ VarE larg) (ConE expName) (Just $ VarE rarg)
+  let expName = if project then changedName else origName
+  let exp = InfixE (Just $ lTupleHandler $ VarE larg) (ConE expName) (Just $ rTupleHandler $ VarE rarg)
 
   pure (pat, exp)
-mkMatchBranch idx project (ForallC bndrs cxt con) = mkMatchBranch idx project con
-mkMatchBranch idx project (GadtC _ _ _) = error "FoldableBi / BaseBi: GADTs not supported"
-mkMatchBranch idx project (RecGadtC _ _ _) = error "FoldableBi / BaseBi: GADTs not supported"
+mkMatchBranch project (ForallC bndrs cxt origCon, ForallC _ _ newCon) = mkMatchBranch project (origCon, newCon)
+mkMatchBranch project (GadtC _ _ _, _) = error "FoldableBi / BaseBi: GADTs not supported"
+mkMatchBranch project (RecGadtC _ _ _, _) = error "FoldableBi / BaseBi: GADTs not supported"
+
+data LTuple b a = LTuple a b
+  deriving (Show, Eq, Functor, Generic1)
+
+flipTupleHandler :: Bool -> Type -> Q (Exp -> Exp)
+flipTupleHandler project typ =
+  maybe (pure id) (fmap AppE) $ flipTupleHandler' project typ
+
+flipTupleHandler' :: Bool -> Type -> Maybe (Q Exp)
+flipTupleHandler' project (AppT ListT a)
+  = appE [| map |] <$> flipTupleHandler' project a
+flipTupleHandler' project (AppT (AppT (ConT conName) typ2) (VarT name))
+  | conName == ''LTuple
+  = if project
+      then Just [| \(a, b) -> LTuple a b |]
+      else Just [| \(LTuple a b) -> (a, b) |]
+flipTupleHandler' _ _ = Nothing
 
 deriveBaseBi :: [Name] -> (Name, Int, Name) -> Q [Dec]
 deriveBaseBi derivs (super, idx, sub) = do
@@ -95,6 +124,7 @@ deriveBaseBi derivs (super, idx, sub) = do
   let convertSub typ =
         case typ of
           ConT name | name == sub -> VarT aVar
+          AppT (AppT (TupleT 2) (VarT name)) typ2 | name == aVar -> AppT (AppT (ConT ''LTuple) typ2) (VarT name)
           _ -> typ
 
   case dataD of
@@ -109,8 +139,8 @@ deriveBaseBi derivs (super, idx, sub) = do
 
       let dataDeclaration = DataInstD cxt Nothing (foldl AppT (ConT ''BaseBi) tyArgs) mkind holed (deriv ++ [extraDerivs])
 
-      embedBranches <- traverse (mkMatchBranch idx False) cons
-      projectBranches <- traverse (mkMatchBranch idx True) cons
+      embedBranches <- traverse (mkMatchBranch False) (cons `zip` holed)
+      projectBranches <- traverse (mkMatchBranch True) (cons `zip` holed)
 
       let embedDefinition = FunD 'embedBi $ map (\(pat, exp) -> Clause [pat] (NormalB exp) []) embedBranches
       let projectDefinition = FunD 'projectBi $ map (\(pat, exp) -> Clause [pat] (NormalB exp) []) projectBranches
