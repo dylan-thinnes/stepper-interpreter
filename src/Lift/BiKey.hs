@@ -136,18 +136,18 @@ nameUsedIn exp name = name `elem` collectNames @from exp
 collectNames :: forall from. (DD.Data from, Biplate from Name) => from -> [Name]
 collectNames = fst . transformBiM @_ @from @Name (\x -> ([x], x))
 
-data GTuple = GTuple { decl :: Dec, to :: Exp, from :: Exp }
+data GTuple = GTuple { gTupleDecl :: Dec, gTupleTo :: Exp, gTupleFrom :: Exp }
   deriving (Show, Eq, Lift)
 
 toGTuple :: [Name] -> Name -> Type -> Q (Maybe GTuple)
 toGTuple derivs target outerType
   | (TupleT n, args) <- flattenApps outerType
   = do
-    (typeName, dataName, decl) <- mkGTuple derivs target args
+    (typeName, dataName, gTupleDecl) <- mkGTuple derivs target args
     bindArgs <- sequence $ replicate n (newName "x")
-    let to = LamE [TupP (map VarP bindArgs)] $ foldr AppE (ConE dataName) (map VarE bindArgs)
-    let from = LamE [ConP dataName (map VarP bindArgs)] $ TupE (map (Just . VarE) bindArgs)
-    pure $ Just $ GTuple { decl, to, from }
+    let gTupleTo = LamE [TupP (map VarP bindArgs)] $ foldr AppE (ConE dataName) (map VarE bindArgs)
+    let gTupleFrom = LamE [ConP dataName (map VarP bindArgs)] $ TupE (map (Just . VarE) bindArgs)
+    pure $ Just $ GTuple { gTupleDecl, gTupleTo, gTupleFrom }
   | otherwise
   = pure Nothing
   where
