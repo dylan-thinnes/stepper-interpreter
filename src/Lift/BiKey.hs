@@ -37,6 +37,8 @@ import Debug.Trace
 thd :: (a, b, c) -> c
 thd (a, b, c) = c
 
+(<&>) = flip (<$>)
+
 extractOcc :: Name -> String
 extractOcc (Name (OccName str) _) = str
 
@@ -165,21 +167,20 @@ resolveTypeSynonym :: [Name] -> Type -> Q Type
 resolveTypeSynonym disallowed type_
   | (ConT funcName) <- func
   , funcName `notElem` disallowed
-  = reify funcName >>=
+  = reify funcName <&>
     \case
       TyConI (TySynD name vars synonymType) ->
         let (actualArgs, additionalArgs) = splitAt (length vars) args
             varNames = map unTyVarBndr vars
             namesToActuals = zip varNames actualArgs
-            newTyp = flip transformBi synonymType $
+            replaceName =
               \case
                 VarT name | Just actual <- lookup name namesToActuals -> actual
                 other -> other
-        in do
-        traceM ("Synonym: " ++ show synonymType)
-        traceM ("Result: " ++ show newTyp)
-        pure (foldr AppT newTyp additionalArgs)
-      _ -> pure type_
+            newTyp = transformBi replaceName synonymType
+        in
+        foldr AppT newTyp additionalArgs
+      _ -> type_
   | otherwise
   = pure type_
   where
