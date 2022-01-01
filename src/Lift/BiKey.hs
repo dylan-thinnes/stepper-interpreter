@@ -196,62 +196,11 @@ deriveBaseBiFamily derivs root = do
   allInstances <- traverse (deriveBaseBi derivs) allEdges
   pure $ concat allInstances
 
-nameUsedIn :: forall from. (DD.Data from, Biplate from Name) => from -> Name -> Bool
-nameUsedIn exp name = name `elem` collectNames @from exp
-
-collectNames :: forall from. (DD.Data from, Biplate from Name) => from -> [Name]
-collectNames = fst . transformBiM @_ @from @Name (\x -> ([x], x))
-
-data GTuple = GTuple { gTupleDecl :: Dec, gTupleTo :: Exp, gTupleFrom :: Exp }
-  deriving (Show, Eq, Lift)
-
-toGTuple :: [Name] -> Name -> Type -> Q (Maybe GTuple)
-toGTuple derivs target outerType
-  | (TupleT n, args) <- flattenAppTs outerType
-  = do
-    (typeName, dataName, gTupleDecl) <- mkGTuple derivs target args
-    bindArgs <- sequence $ replicate n (newName "x")
-    let gTupleTo = LamE [TupP (map VarP bindArgs)] $ foldr AppE (ConE dataName) (map VarE bindArgs)
-    let gTupleFrom = LamE [ConP dataName (map VarP bindArgs)] $ TupE (map (Just . VarE) bindArgs)
-    pure $ Just $ GTuple { gTupleDecl, gTupleTo, gTupleFrom }
-  | otherwise
-  = pure Nothing
-
 flattenAppTs :: Type -> (Type, [Type])
 flattenAppTs = fmap reverse . go
   where
     go (AppT func arg) = (arg :) <$> go func
     go type_ = (type_, [])
-
-mkGTuple :: [Name] -> Name -> [Type] -> Q (Name, Name, Dec) -- ([(Name, Name)], [Type])
-mkGTuple derivs target spec = do
-  let collectVars :: Type -> [Name]
-      collectVars typ = [name | VarT name <- universe typ]
-
-  let oldVars :: [Name]
-      oldVars = nub $ filter (/= target) $ concatMap collectVars spec
-
-  newVars <- traverse (newName . extractOcc) oldVars
-
-  holeVar <- newName "a"
-  let varPairs = zip oldVars newVars ++ [(target, holeVar)]
-
-  let replaceVar = transformBi @Type @Name $ \name -> fromMaybe name $ name `lookup` varPairs
-  let replacedTypes = map replaceVar spec
-
-  typeName <- newName "AuxGTuple"
-  dataName <- newName "AuxGTuple"
-
-  let bang typ = (Bang NoSourceUnpackedness NoSourceStrictness, typ)
-  let definition =
-        DataD []
-          typeName
-          (map (PlainTV . snd) varPairs)
-          Nothing
-          [NormalC dataName $ map bang replacedTypes]
-          [DerivClause Nothing $ ConT <$> derivs]
-
-  pure (typeName, dataName, definition)
 
 data BiKey from to where
   BKNil :: BiKey a a
