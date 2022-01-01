@@ -1,4 +1,6 @@
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveFunctor #-}
@@ -103,7 +105,7 @@ mkMatchBranch project (GadtC _ _ _, _) = error "FoldableBi / BaseBi: GADTs not s
 mkMatchBranch project (RecGadtC _ _ _, _) = error "FoldableBi / BaseBi: GADTs not supported"
 
 data LTuple b a = LTuple a b
-  deriving (Show, Eq, Functor, Generic1)
+  deriving (Show, Eq, Functor, Foldable, Traversable, Generic1)
 
 flipTupleHandler :: Bool -> Type -> Q (Exp -> Exp)
 flipTupleHandler project typ =

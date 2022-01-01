@@ -222,4 +222,4 @@ $(do
   -}
 
 -- $(deriveBaseBi [''Show, ''Functor, ''Generic] (''Exp, 0, ''Dec))
-$(deriveBaseBiFamily [''Show, ''Functor, ''Generic1] ''Exp)
+$(deriveBaseBiFamily [''Show, ''Functor, ''Generic1, ''Foldable, ''Traversable] ''Exp)
