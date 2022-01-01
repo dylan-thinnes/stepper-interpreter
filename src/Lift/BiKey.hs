@@ -256,18 +256,19 @@ mkGTuple derivs target spec = do
 data BiKey from to where
   BKNil :: BiKey a a
   (:::) ::
-    (BaseBi a b ~ base, Rep1 base ~ rep, Generic1 base, Keyed rep, Eq (Key rep), Show (Key rep), RecursiveBi a b)
+    (BaseBi a b ~ base, Rep1 base ~ rep, Traversable base, Generic1 base, Keyed rep, Eq (Key rep), Show (Key rep), RecursiveBi a b)
       => Key rep -> BiKey b c -> BiKey a c
 
-useRepKey :: forall f a key. (Generic1 f, Keyed (Rep1 f), Key (Rep1 f) ~ key, Eq key) => key -> (a -> a) -> f a -> f a
-useRepKey targetKey mod froma = to1 $ mapWithKey mod' $ from1 froma
+useRepKey :: forall m f a key. (Applicative m, Traversable f, Generic1 f, Keyed (Rep1 f), Key (Rep1 f) ~ key, Eq key) => key -> (a -> m a) -> f a -> m (f a)
+useRepKey targetKey mod froma = sequenceA $ to1 $ mapWithKey mod' $ from1 froma
   where
-    mod' :: key -> a -> a
-    mod' key a = if key == targetKey then mod a else a
+    mod' :: key -> a -> m a
+    mod' key a = if key == targetKey then mod a else pure a
 
-mapBiKey :: forall from to. BiKey from to -> (to -> to) -> from -> from
-mapBiKey BKNil handler from = handler from
-mapBiKey ((head :: Key (Rep1 (BaseBi from b))) ::: rest) handler from = embedBi $ useRepKey head (mapBiKey rest handler) (projectBi @from @b from)
+adjustBiKey :: forall from to m. Applicative m => BiKey from to -> (to -> m to) -> from -> m from
+adjustBiKey BKNil handler from = handler from
+adjustBiKey ((head :: Key (Rep1 (BaseBi from b))) ::: rest) handler from =
+  embedBi <$> useRepKey head (adjustBiKey rest handler) (projectBi @from @b from)
 
 instance Show (BiKey a b) where
   show BKNil = "[]"
