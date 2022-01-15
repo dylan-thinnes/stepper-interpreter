@@ -205,20 +205,31 @@ flattenAppTs = fmap reverse . go
 data BiKey from to where
   BKNil :: BiKey a a
   (:::) ::
-    (BaseBi a b ~ base, Rep1 base ~ rep, Traversable base, Generic1 base, Keyed rep, Eq (Key rep), Show (Key rep), RecursiveBi a b)
-      => Key rep -> BiKey b c -> BiKey a c
+    ( BaseBi to newTo ~ base, Rep1 base ~ rep
+    , Traversable base, Generic1 base
+    , Keyed rep, Eq (Key rep), Show (Key rep)
+    , RecursiveBi to newTo
+    ) => BiKey from to -> Key rep -> BiKey from newTo
 
 useRepKey :: forall m f a key. (Applicative m, Traversable f, Generic1 f, Keyed (Rep1 f), Key (Rep1 f) ~ key, Eq key) => key -> (a -> m a) -> f a -> m (f a)
 useRepKey targetKey mod froma = sequenceA $ to1 $ mapWithKey mod' $ from1 froma
   where
     mod' :: key -> a -> m a
-    mod' key a = if key == targetKey then mod a else pure a
+    mod' key a
+      | key == targetKey = mod a
+      | otherwise = pure a
 
 adjustBiKey :: forall from to m. Applicative m => BiKey from to -> (to -> m to) -> from -> m from
-adjustBiKey BKNil handler from = handler from
-adjustBiKey ((head :: Key (Rep1 (BaseBi from b))) ::: rest) handler from =
-  embedBi <$> useRepKey head (adjustBiKey rest handler) (projectBi @from @b from)
+adjustBiKey BKNil handler = handler
+adjustBiKey (rest ::: (head :: Key (Rep1 (BaseBi b to)))) handler =
+  adjustBiKey rest $ fmap embedBi . useRepKey head handler . projectBi @b @to
 
 instance Show (BiKey a b) where
   show BKNil = "[]"
   show (head ::: tail) = show head ++ " ::: " ++ show tail
+
+data BiKeyed from to where
+  BKLast :: a -> BiKeyed a a
+  (::::) :: BaseBi a b (Key (Rep1 (BaseBi a b)), BiKeyed b c) -> BiKeyed a c
+
+
