@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE ApplicativeDo #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveLift #-}
 {-# LANGUAGE DeriveTraversable #-}
@@ -18,7 +19,7 @@
 
 module Lift where
 
-import "base" Control.Monad ((<=<))
+import "base" Control.Monad ((<=<), zipWithM)
 import "base" Data.Bifunctor
 import "base" Data.Functor.Compose
 import "base" Data.Functor.Const
@@ -66,6 +67,25 @@ instance Keyed ExpF where
   mapWithKey g fa = to1 $ mapWithKey g (from1 fa)
 instance Adjustable ExpF where
   adjust g k fa = mapWithKey (\k' x -> if k == k' then g x else x) fa
+
+data ExpDeepKey
+  = EDKLast ExpKey
+  | EDKCons ExpKey ExpAltKey ExpDeepKey
+data ExpAltKey = EALet Int
+  deriving (Show)
+
+modExpByDeepKeyA :: Applicative m => (Exp -> m Exp) -> ExpDeepKey -> Exp -> m Exp
+modExpByDeepKeyA f (EDKLast key) = modExpByKeyA f key
+modExpByDeepKeyA f (EDKCons normalKey altKey rest) =
+  modExpByKeyA (modExpByAltKeyA (modExpByDeepKeyA f rest) altKey) normalKey
+
+modExpByAltKeyA :: Applicative m => (Exp -> m Exp) -> ExpAltKey -> Exp -> m Exp
+modExpByAltKeyA f (EALet idx) (LetE decls body) = do
+  LetE <$> zipWithM modifyOnlyMatching [0..] decls <*> pure body
+  where
+    modifyOnlyMatching ii (ValD pat (NormalB exp) wheres) -- Ignore guarded values
+      | ii == idx = ValD pat <$> (NormalB <$> f exp) <*> pure wheres
+    modifyOnlyMatching _ decl = pure decl
 
 type PatKey = [Key PatF]
 type ExpKey = [Key ExpF]
