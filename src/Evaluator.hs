@@ -494,7 +494,7 @@ envExpAt topEnv topExp startingKey =
       in
       case key of
         [] -> Left (newEnv, exp)
-        head:rest -> adjustRecursiveA (\exp -> go newEnv exp rest) [head] exp
+        head:rest -> adjustRecursiveA [head] (\exp -> go newEnv exp rest) exp
 
 type EvaluateM = ReaderT HaltHandlers (Except String)
 
@@ -552,7 +552,7 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
 
     _reduce :: ExpKey -> EvaluateM ReductionResult
     _reduce key =
-      case modAnnExpByKeyA Left key annotated of
+      case modAnnExpByKeyA key Left annotated of
         Left targetNode -> reduce targetNode
         Right _ -> throwError $ "Error: Couldn't find index: " ++ show key
 
@@ -560,10 +560,10 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
     modifyExp modifier path =
       getCompose $
         adjustRecursiveGGA
-          (Compose . modifier)
           (\(Pair cann ffix) -> ffix)
           (\f k (Pair cann ffix) -> adjust f k ffix)
           path
+          (Compose . modifier)
           annotated
 
     _replace :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
@@ -727,7 +727,7 @@ reduce exp = match
       | Just targetPath <- forcesViaCase (deann exp)
       , Just (env, subexp) <- envExpAt defaultEnvironment (deann exp) targetPath
       , LetE decs body <- subexp
-      = Just $ replaceSelf Nothing $ letWrap decs $ modExpByKey (const body) targetPath (deann exp)
+      = Just $ replaceSelf Nothing $ letWrap decs $ modExpByKey targetPath (const body) (deann exp)
       | otherwise
       = empty
 

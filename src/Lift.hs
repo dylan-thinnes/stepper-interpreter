@@ -74,36 +74,37 @@ data ExpDeepKey
 data ExpAltKey = EALet Int
   deriving (Show)
 
-modExpByDeepKeyA :: Applicative m => (Exp -> m Exp) -> ExpDeepKey -> Exp -> m Exp
-modExpByDeepKeyA f (EDKLast key) = modExpByKeyA f key
-modExpByDeepKeyA f (EDKCons normalKey altKey rest) =
-  modExpByKeyA (modExpByAltKeyA (modExpByDeepKeyA f rest) altKey) normalKey
+modExpByDeepKeyA :: Applicative m => ExpDeepKey -> (Exp -> m Exp) -> Exp -> m Exp
+modExpByDeepKeyA (EDKLast key) f = modExpByKeyA key f
+modExpByDeepKeyA (EDKCons normalKey altKey rest) f =
+  modExpByKeyA normalKey $ modExpByAltKeyA altKey $ modExpByDeepKeyA rest f
 
-modExpByAltKeyA :: Applicative m => (Exp -> m Exp) -> ExpAltKey -> Exp -> m Exp
-modExpByAltKeyA f (EALet idx) (LetE decls body) = do
+modExpByAltKeyA :: Applicative m => ExpAltKey -> (Exp -> m Exp) -> Exp -> m Exp
+modExpByAltKeyA (EALet idx) f (LetE decls body) = do
   LetE <$> zipWithM modifyOnlyMatching [0..] decls <*> pure body
   where
     modifyOnlyMatching ii (ValD pat (NormalB exp) wheres) -- Ignore guarded values
       | ii == idx = ValD pat <$> (NormalB <$> f exp) <*> pure wheres
     modifyOnlyMatching _ decl = pure decl
+modExpByAltKeyA _ _ exp = pure exp
 
 type PatKey = [Key PatF]
 type ExpKey = [Key ExpF]
 
-modPatByKey :: (Pat -> Pat) -> PatKey -> Pat -> Pat
+modPatByKey :: PatKey -> (Pat -> Pat) -> Pat -> Pat
 modPatByKey = adjustRecursive
 
-modExpByKey :: (Exp -> Exp) -> ExpKey -> Exp -> Exp
+modExpByKey :: ExpKey -> (Exp -> Exp) -> Exp -> Exp
 modExpByKey = adjustRecursive
 
-modPatByKeyA :: Applicative m => (Pat -> m Pat) -> PatKey -> Pat -> m Pat
+modPatByKeyA :: Applicative m => PatKey -> (Pat -> m Pat) -> Pat -> m Pat
 modPatByKeyA = adjustRecursiveA
 
-modExpByKeyA :: Applicative m => (Exp -> m Exp) -> ExpKey -> Exp -> m Exp
+modExpByKeyA :: Applicative m => ExpKey -> (Exp -> m Exp) -> Exp -> m Exp
 modExpByKeyA = adjustRecursiveA
 
-modAnnExpByKeyA :: Applicative m => (Fix (RecKey Exp) -> m (Fix (RecKey Exp))) -> ExpKey -> Fix (RecKey Exp) -> m (Fix (RecKey Exp))
-modAnnExpByKeyA f = adjustRecursiveGA f (\f k (Pair cann ffix) -> Pair cann (adjust f k ffix))
+modAnnExpByKeyA :: Applicative m => ExpKey -> (Fix (RecKey Exp) -> m (Fix (RecKey Exp))) -> Fix (RecKey Exp) -> m (Fix (RecKey Exp))
+modAnnExpByKeyA = adjustRecursiveGA (\f k (Pair cann ffix) -> Pair cann (adjust f k ffix))
 
 dekeyed :: Functor f => f (Key f, a) -> f a
 dekeyed = fmap snd
@@ -116,30 +117,32 @@ embedK = R.embed . dekeyed
 
 adjustRecursive
   :: (R.Base t ~ f, Adjustable f, Traversable f, R.Corecursive t, R.Recursive t)
-  => (t -> t) -> [Key (R.Base t)] -> t -> t
-adjustRecursive f keys t = runIdentity $ adjustRecursiveA (Identity . f) keys t
+  => [Key (R.Base t)] -> (t -> t) -> t -> t
+adjustRecursive keys f t = runIdentity $ adjustRecursiveA keys (Identity . f) t
 
 adjustRecursiveA
   :: (R.Base t ~ f, Adjustable f, Traversable f, R.Corecursive t, R.Recursive t, Applicative m)
-  => (t -> m t) -> [Key (R.Base t)] -> t -> m t
-adjustRecursiveA f keys t = adjustRecursiveGA f adjust keys t
+  => [Key (R.Base t)] -> (t -> m t) -> t -> m t
+adjustRecursiveA keys f t = adjustRecursiveGA adjust keys f t
 
 adjustRecursiveG
   :: (f ~ R.Base t, Traversable f, R.Corecursive t, R.Recursive t)
-  => (t -> t)
-  -> (forall a. (a -> a) -> k -> f a -> f a)
-  -> [k] -> t -> t
-adjustRecursiveG f adjust keys t = runIdentity $ adjustRecursiveGA (Identity . f) adjust keys t
+  => (forall a. (a -> a) -> k -> f a -> f a)
+  -> [k]
+  -> (t -> t)
+  -> t -> t
+adjustRecursiveG adjust keys f t = runIdentity $ adjustRecursiveGA adjust keys (Identity . f) t
 
 adjustRecursiveGA
   :: (f ~ R.Base t, Traversable f, R.Corecursive t, R.Recursive t, Applicative m)
-  => (t -> m t)
-  -> (forall a. (a -> a) -> k -> f a -> f a)
-  -> [k] -> t -> m t
-adjustRecursiveGA f adjust [] t = f t
-adjustRecursiveGA f adjust (k:rest) t =
+  => (forall a. (a -> a) -> k -> f a -> f a)
+  -> [k]
+  -> (t -> m t)
+  -> t -> m t
+adjustRecursiveGA adjust [] f t = f t
+adjustRecursiveGA adjust (k:rest) f t =
   -- have to do these shenanigans because `adjust` can't change type inside container
-  let modifyWithWitness (_, a) = (adjustRecursiveGA f adjust rest a, a)
+  let modifyWithWitness (_, a) = (adjustRecursiveGA adjust rest f a, a)
       pureWithWitness a = (pure a, a)
   in
   fmap R.embed
@@ -152,15 +155,16 @@ adjustRecursiveGA f adjust (k:rest) t =
 adjustRecursiveGGA
   :: forall m t u f g k
    . (f ~ R.Base t, g ~ R.Base u, Traversable g, R.Corecursive u, R.Recursive t, Applicative m)
-  => (t -> m u)
-  -> (forall a. f a -> g a)
+  => (forall a. f a -> g a)
   -> (forall a. (a -> a) -> k -> f a -> g a)
-  -> [k] -> t -> m u
-adjustRecursiveGGA f reshape adjust [] t = f t
-adjustRecursiveGGA f reshape adjust (k:rest) t =
+  -> [k]
+  -> (t -> m u)
+  -> t -> m u
+adjustRecursiveGGA reshape adjust [] f t = f t
+adjustRecursiveGGA reshape adjust (k:rest) f t =
   -- have to do these shenanigans because `adjust` can't change type inside container
   let modifyWithWitness :: (m u, t) -> (m u, t)
-      modifyWithWitness (_, a) = (adjustRecursiveGGA f reshape adjust rest a, a)
+      modifyWithWitness (_, a) = (adjustRecursiveGGA reshape adjust rest f a, a)
 
       pureWithWitness :: t -> (m u, t)
       pureWithWitness a = (pure $ R.hoist reshape a, a)

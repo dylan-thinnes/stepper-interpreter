@@ -48,7 +48,7 @@ noann :: (Functor f, R.Corecursive t, R.Recursive t, f ~ R.Base t) => t -> Annot
 noann = R.hoist (Pair (Const Nothing))
 
 attachAnn :: (Adjustable f, Functor f, Traversable f) => [Key f] -> Annotation -> Annotated f -> Annotated f
-attachAnn key ann = adjustRecursiveG setAnn modify key
+attachAnn key ann = adjustRecursiveG modify key setAnn
   where
     setAnn (Fix (Pair _ expf)) = Fix $ Pair (Const (Just ann)) expf
     modify f key (Pair ann expf) = Pair ann $ adjust f key expf
