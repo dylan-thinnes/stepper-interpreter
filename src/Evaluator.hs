@@ -347,14 +347,14 @@ patToIsListG extractPattern pat
 
 data Declarable
   = FunctionDeclaration FunctionDeclaration -- let f <1st clause>; f <2nd clause> ...
-  | ValueDeclaration Pat Body [Dec] -- let <pat> = <body> where <...decs>
+  | ValueDeclaration (Maybe (ExpKey, Int)) Pat Body [Dec] -- let <pat> = <body> where <...decs>
   | DataField Pat Name -- field for a datatype, e.g. MyDatatype { myField :: Int }
   | Seq
   deriving (Show)
 
 debugDeclarable :: Declarable -> String
 debugDeclarable (FunctionDeclaration funDecl) = debugFunctionDeclaration funDecl
-debugDeclarable (ValueDeclaration pat body decs) = "Value: " ++ pprint (ValD pat body decs)
+debugDeclarable (ValueDeclaration location pat body decs) = "Value: " ++ pprint (ValD pat body decs)
 debugDeclarable (DataField pat name) = concat ["DataField: field \"", pprint name, "\" in ", pprint pat]
 debugDeclarable Seq = "Seq: Seq"
 
@@ -426,13 +426,21 @@ addNewEnvs env news = foldl updateEnv env news
     updateEnv :: Environment -> Environment -> Environment
     updateEnv env new = M.unionWith const new env
 
-defines :: Dec -> Environment
-defines = mkEnvironment . go
+defines :: Maybe (ExpKey, Int) -> Dec -> Environment
+defines location dec = mkEnvironment $ do
+  declarable <- defines' dec
+  case declarable of
+    (name, ValueDeclaration _ pat body wheres) ->
+      pure (name, ValueDeclaration location pat body wheres)
+    declarable -> pure declarable
+
+defines' :: Dec -> [(Name, Declarable)]
+defines' = go
   where
   targetName = $(lift =<< newName "target")
 
   go (FunD name clauses) = [(name, FunctionDeclaration $ ClausesFD clauses)]
-  go (ValD pat body wheres) = [(name, ValueDeclaration pat body wheres) | name <- patNames' pat]
+  go (ValD pat body wheres) = [(name, ValueDeclaration Nothing pat body wheres) | name <- patNames' pat]
   go (DataD ctx name tyvars kind cons derivs) = concatMap definesCon cons
     where
       mkDataField size conName idx var =
@@ -469,7 +477,7 @@ lookupDefinitionRaw :: String -> Environment -> Maybe Declarable
 lookupDefinitionRaw raw = lookupDefinitionFullRaw (RawName raw)
 
 envFromDecs :: [Dec] -> Environment
-envFromDecs decs = addNewEnvs defaultEnvironment (map defines decs)
+envFromDecs decs = addNewEnvs defaultEnvironment (map (defines Nothing) decs)
 
 -- Find expression and in-scope environment at a path in an AST
 envExpAt :: Environment -> Exp -> ExpKey -> Maybe (Environment, Exp)
@@ -481,7 +489,7 @@ envExpAt topEnv topExp startingKey =
     go env exp key =
       let newEnv =
             case exp of
-              LetE decs body -> addNewEnvs env $ defines <$> decs
+              LetE decs body -> addNewEnvs env $ zipWith (\i -> defines (Just (key, i))) [0..] decs
               _ -> env
       in
       case key of
@@ -826,7 +834,7 @@ reduce exp = match
             -- TODO: handle when looked-up var is not a function
             LookupVariableNodeMissing -> MT.lift $ throwError $ "Couldn't find target node, this is a serious error, please contact." -- TODO: Classify error severity
             LookupVariableNotFound env target -> MT.lift $ throwError $ "Couldn't find variable " ++ show name ++ "\n  at node: " ++ pprint target ++ "\n  rep: " ++ show target ++ "\n  in environment: " ++ debugEnvironment env
-            LookupVariableFound (ValueDeclaration pat body wheres)
+            LookupVariableFound (ValueDeclaration location pat body wheres)
               -- TODO: handle lookup of a lambda (probably means an error in flattenApps)
               | Fix (Pair (Const funcIdx) _) <- func
               , NormalB bodyExp <- body -- TODO: handle guards

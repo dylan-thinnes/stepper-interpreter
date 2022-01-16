@@ -151,7 +151,7 @@ run' :: DecsQ -> IO (Either String ReductionResult)
 run' decsQ = do
   decs <- runQ decsQ
   let env = envFromDecs decs
-  let Just (ValueDeclaration _ (NormalB exp) _) = lookupDefinitionRaw "exp" env
+  let Just (ValueDeclaration _ _ (NormalB exp) _) = lookupDefinitionRaw "exp" env
   run env exp
 
 matchesIgnore :: ReductionResult -> Bool
