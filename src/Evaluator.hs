@@ -497,10 +497,8 @@ envExpAt topEnv topExp startingKey =
               _ -> env
       in
       case key of
-        EDKLast [] -> Left (newEnv, exp)
-        EDKLast (head:rest) -> adjustRecursiveA [head] (\exp -> go newEnv exp (EDKLast rest)) exp
-        EDKCons [] altKey next -> modExpByAltKeyA altKey (\exp -> go newEnv exp next) exp
-        EDKCons (head:rest) altKey next -> adjustRecursiveA [head] (\exp -> go newEnv exp (EDKCons rest altKey next)) exp
+        [] -> Left (newEnv, exp)
+        (head:rest) -> modExpByDeepKeyA [head] (\exp -> go newEnv exp rest) exp
 
 type EvaluateM = ReaderT EvaluationInfo (Except String)
 
@@ -570,7 +568,7 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
         _reduce,
         _replace,
         _makeUniqueName,
-        _precedingDeepKey = EDKLast []
+        _precedingDeepKey = []
       }
 
     _reduce :: ExpKey -> EvaluateM ReductionResult

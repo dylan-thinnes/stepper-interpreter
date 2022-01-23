@@ -68,27 +68,22 @@ instance Keyed ExpF where
 instance Adjustable ExpF where
   adjust g k fa = mapWithKey (\k' x -> if k == k' then g x else x) fa
 
-data ExpDeepKey
-  = EDKLast ExpKey
-  | EDKCons ExpKey ExpAltKey ExpDeepKey
-  deriving (Show)
 data ExpAltKey = EALet Int
   deriving (Show)
-
-modEDKLast :: (ExpKey -> ExpDeepKey) -> ExpDeepKey -> ExpDeepKey
-modEDKLast f (EDKCons shallow alt next) = EDKCons shallow alt (modEDKLast f next)
-modEDKLast f (EDKLast shallow) = f shallow
+type ExpDeepKey = [Either ExpAltKey (Key ExpF)]
 
 appendAlt :: ExpDeepKey -> ExpAltKey -> ExpDeepKey
-appendAlt deep addendum = modEDKLast (\shallow -> EDKCons shallow addendum (EDKLast [])) deep
+appendAlt deep addendum = deep ++ [Left addendum]
 
 appendShallow :: ExpDeepKey -> ExpKey -> ExpDeepKey
-appendShallow deep addendum = modEDKLast (\shallow -> EDKLast $ shallow ++ addendum) deep
+appendShallow deep addendum = deep ++ map Right addendum
 
 modExpByDeepKeyA :: Applicative m => ExpDeepKey -> (Exp -> m Exp) -> Exp -> m Exp
-modExpByDeepKeyA (EDKLast key) f = modExpByKeyA key f
-modExpByDeepKeyA (EDKCons normalKey altKey rest) f =
-  modExpByKeyA normalKey $ modExpByAltKeyA altKey $ modExpByDeepKeyA rest f
+modExpByDeepKeyA [] f = f
+modExpByDeepKeyA (Right normalKey : rest) f =
+  modExpByKeyA [normalKey] $ modExpByDeepKeyA rest f
+modExpByDeepKeyA (Left altKey : rest) f =
+  modExpByAltKeyA altKey $ modExpByDeepKeyA rest f
 
 modAnnExpByDeepKeyA :: Applicative m => ExpDeepKey -> (RecKey Exp -> m (RecKey Exp)) -> RecKey Exp -> m (RecKey Exp)
 modAnnExpByDeepKeyA = undefined
