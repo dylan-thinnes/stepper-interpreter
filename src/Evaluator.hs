@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TypeSynonymInstances #-}
@@ -19,6 +20,7 @@ module Evaluator where
 
 import "base" Control.Applicative
 import "base" Control.Monad (zipWithM, ap)
+import "base" Data.Bifunctor (first)
 import "base" Data.Foldable (fold, toList)
 import "base" Data.Function ((&))
 import "base" Data.Functor.Compose
@@ -107,7 +109,7 @@ matchPatKeyed = matchPatKeyedConfigurable False
 matchPatKeyedConfigurable :: Bool -> Pat -> Exp -> MatchResult
 matchPatKeyedConfigurable goThroughLet pat exp = go (annKeys pat) (annKeys exp)
   where
-    go :: Fix (RecKey Pat) -> Fix (RecKey Exp) -> MatchResult
+    go :: RecKey Pat -> RecKey Exp -> MatchResult
     go annPat annExp = matchLists annPat annExp
       where
         (patKey, patFAnn) = toKeyPair annPat
@@ -120,7 +122,7 @@ matchPatKeyedConfigurable goThroughLet pat exp = go (annKeys pat) (annKeys exp)
         unexpectedError :: String -> MatchMonad a
         unexpectedError msg = Left $ UnexpectedErrorMatch msg (patKey, expKey)
 
-        matchLists :: Fix (RecKey Pat) -> Fix (RecKey Exp) -> MatchResult
+        matchLists :: RecKey Pat -> RecKey Exp -> MatchResult
         matchLists pat exp =
           let patList = patToIsListKeyed pat
               expList = expToIsListKeyed exp
@@ -148,7 +150,7 @@ matchPatKeyedConfigurable goThroughLet pat exp = go (annKeys pat) (annKeys exp)
             -- Try matches by other means
             _ -> match patFAnn expFAnn
 
-        match :: PatF (Fix (RecKey Pat)) -> ExpF (Fix (RecKey Exp)) -> MatchResult
+        match :: PatF (RecKey Pat) -> ExpF (RecKey Exp) -> MatchResult
         match (LitPF pat) (LitEF exp)
           | pat == exp = Right []
           | otherwise = mismatch
@@ -250,7 +252,7 @@ flattenAppsF _ = Nothing
 flattenApps :: Exp -> FlattenedApps Exp
 flattenApps = flattenAppsG id
 
-flattenAppsKeyed :: Fix (RecKey Exp) -> FlattenedApps (Fix (RecKey Exp))
+flattenAppsKeyed :: RecKey Exp -> FlattenedApps (RecKey Exp)
 flattenAppsKeyed = flattenAppsG (\(Pair _ expf) -> expf)
 
 flattenAppsG
@@ -289,7 +291,7 @@ isList _ = True
 expToIsList :: Exp -> IsList Exp
 expToIsList = expToIsListG id
 
-expToIsListKeyed :: Fix (RecKey Exp) -> IsList (Fix (RecKey Exp))
+expToIsListKeyed :: RecKey Exp -> IsList (RecKey Exp)
 expToIsListKeyed = expToIsListG (\(Pair _ expf) -> expf)
 
 expToIsListG
@@ -316,7 +318,7 @@ expToIsListG extractExpression exp
 patToIsList :: Pat -> IsList Pat
 patToIsList = patToIsListG id
 
-patToIsListKeyed :: Fix (RecKey Pat) -> IsList (Fix (RecKey Pat))
+patToIsListKeyed :: RecKey Pat -> IsList (RecKey Pat)
 patToIsListKeyed = patToIsListG (\(Pair _ patf) -> patf)
 
 patToIsListG
@@ -347,7 +349,7 @@ patToIsListG extractPattern pat
 
 data Declarable
   = FunctionDeclaration FunctionDeclaration -- let f <1st clause>; f <2nd clause> ...
-  | ValueDeclaration (Maybe (ExpKey, Int)) Pat Body [Dec] -- let <pat> = <body> where <...decs>
+  | ValueDeclaration (Maybe (ExpDeepKey, Int)) Pat Body [Dec] -- let <pat> = <body> where <...decs>
   | DataField Pat Name -- field for a datatype, e.g. MyDatatype { myField :: Int }
   | Seq
   deriving (Show)
@@ -426,7 +428,7 @@ addNewEnvs env news = foldl updateEnv env news
     updateEnv :: Environment -> Environment -> Environment
     updateEnv env new = M.unionWith const new env
 
-defines :: Maybe (ExpKey, Int) -> Dec -> Environment
+defines :: Maybe (ExpDeepKey, Int) -> Dec -> Environment
 defines location dec = mkEnvironment $ do
   declarable <- defines' dec
   case declarable of
@@ -480,32 +482,46 @@ envFromDecs :: [Dec] -> Environment
 envFromDecs decs = addNewEnvs defaultEnvironment (map (defines Nothing) decs)
 
 -- Find expression and in-scope environment at a path in an AST
-envExpAt :: Environment -> Exp -> ExpKey -> Maybe (Environment, Exp)
+envExpAt :: Environment -> Exp -> ExpDeepKey -> Maybe (Environment, Exp)
 envExpAt topEnv topExp startingKey =
   case go topEnv topExp startingKey of
     Left (env, exp) -> Just (env, exp)
     Right _ -> Nothing
   where
+    go :: Environment -> Exp -> ExpDeepKey -> Either (Environment, Exp) Exp
     go env exp key =
-      let newEnv =
+      let newEnv :: Environment
+          newEnv =
             case exp of
               LetE decs body -> addNewEnvs env $ zipWith (\i -> defines (Just (key, i))) [0..] decs
               _ -> env
       in
       case key of
-        [] -> Left (newEnv, exp)
-        head:rest -> adjustRecursiveA [head] (\exp -> go newEnv exp rest) exp
+        EDKLast [] -> Left (newEnv, exp)
+        EDKLast (head:rest) -> adjustRecursiveA [head] (\exp -> go newEnv exp (EDKLast rest)) exp
+        EDKCons [] altKey next -> modExpByAltKeyA altKey (\exp -> go newEnv exp next) exp
+        EDKCons (head:rest) altKey next -> adjustRecursiveA [head] (\exp -> go newEnv exp (EDKCons rest altKey next)) exp
 
-type EvaluateM = ReaderT HaltHandlers (Except String)
+type EvaluateM = ReaderT EvaluationInfo (Except String)
 
-data HaltHandlers = HaltHandlers
-  { _lookupVariable :: Name -> ExpKey -> LookupVariableResponse
+data EvaluationInfo = EvaluationInfo
+  { _lookupVariable :: Name -> ExpDeepKey -> LookupVariableResponse
   , _reduce :: ExpKey -> EvaluateM ReductionResult
   , _replace :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
-  , _makeUniqueName :: ExpKey -> Name -> Name
+  , _makeUniqueName :: ExpDeepKey -> Name -> Name
+  , _precedingDeepKey :: ExpDeepKey
   }
 
-lookupVariableAbsolute :: Name -> ExpKey -> EvaluateM LookupVariableResponse
+deepenAltKey :: ExpKey -> ExpAltKey -> EvaluateM a -> EvaluateM a
+deepenAltKey above alt action = local modifyInfo action
+  where
+    modifyInfo info@EvaluationInfo { _precedingDeepKey } =
+      info { _precedingDeepKey = appendAlt (appendShallow _precedingDeepKey above) alt }
+
+getDeepKey :: ExpKey -> EvaluateM ExpDeepKey
+getDeepKey lastKey = asks $ \info -> appendShallow (_precedingDeepKey info) lastKey
+
+lookupVariableAbsolute :: Name -> ExpDeepKey -> EvaluateM LookupVariableResponse
 lookupVariableAbsolute name path = asks $ \f -> _lookupVariable f name path
 
 reduceAbsolute :: ExpKey -> EvaluateM ReductionResult
@@ -514,10 +530,10 @@ reduceAbsolute path = ask >>= \f -> _reduce f path
 replaceAbsolute :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
 replaceAbsolute reason path exp = ask >>= \f -> _replace f reason path exp
 
-makeUniqueNameAbsolute :: ExpKey -> Name -> EvaluateM Name
+makeUniqueNameAbsolute :: ExpDeepKey -> Name -> EvaluateM Name
 makeUniqueNameAbsolute path name = asks $ \f -> _makeUniqueName f path name
 
-makeUniqueNamesAbsolute :: (Data from, Biplate from Name) => ExpKey -> from -> EvaluateM from
+makeUniqueNamesAbsolute :: (Data from, Biplate from Name) => ExpDeepKey -> from -> EvaluateM from
 makeUniqueNamesAbsolute path = transformBiM (makeUniqueNameAbsolute path)
 
 data LookupVariableResponse
@@ -548,7 +564,14 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
   where
     annotated = annKeys topExp
 
-    haltHandlers = HaltHandlers { _lookupVariable, _reduce, _replace, _makeUniqueName }
+    haltHandlers =
+      EvaluationInfo {
+        _lookupVariable,
+        _reduce,
+        _replace,
+        _makeUniqueName,
+        _precedingDeepKey = EDKLast []
+      }
 
     _reduce :: ExpKey -> EvaluateM ReductionResult
     _reduce key =
@@ -556,7 +579,7 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
         Left targetNode -> reduce targetNode
         Right _ -> throwError $ "Error: Couldn't find index: " ++ show key
 
-    modifyExp :: (Fix (RecKey Exp) -> EvaluateM ReductionResult) -> ExpKey -> EvaluateM ReductionResult
+    modifyExp :: (RecKey Exp -> EvaluateM ReductionResult) -> ExpKey -> EvaluateM ReductionResult
     modifyExp modifier path =
       getCompose $
         adjustRecursiveGGA
@@ -569,7 +592,7 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
     _replace :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
     _replace reason key exp = modifyExp (const $ pure $ NewlyReduced reason exp) key
 
-    _lookupVariable :: Name -> ExpKey -> LookupVariableResponse
+    _lookupVariable :: Name -> ExpDeepKey -> LookupVariableResponse
     _lookupVariable name expKey =
       case envExpAt topEnv topExp expKey of
         Nothing -> LookupVariableNodeMissing
@@ -578,7 +601,7 @@ evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
             Nothing -> LookupVariableNotFound env targetNode
             Just definition -> LookupVariableFound definition
 
-    _makeUniqueName :: ExpKey -> Name -> Name
+    _makeUniqueName :: ExpDeepKey -> Name -> Name
     _makeUniqueName expKey name =
       case envExpAt topEnv topExp expKey of
         Nothing -> name
@@ -676,10 +699,10 @@ whnf exp
   | otherwise
   = True
 
-reduce :: Fix (RecKey Exp) -> EvaluateM ReductionResult
+reduce :: RecKey Exp -> EvaluateM ReductionResult
 reduce exp = match
   where
-    Fix (Pair (Const globalPath) expf) = exp
+    Fix (Pair (Const globalShallowPath) expf) = exp
 
     cannotReduce :: EvaluateM ReductionResult
     cannotReduce = pure $ CannotReduce $ deann exp
@@ -688,16 +711,20 @@ reduce exp = match
     replaceSelf reason = replaceRelative reason []
 
     replaceRelative :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
-    replaceRelative reason path = replaceAbsolute reason (globalPath ++ path)
+    replaceRelative reason path = replaceAbsolute reason (globalShallowPath ++ path)
 
     reduceRelative :: ExpKey -> EvaluateM ReductionResult
-    reduceRelative path = reduceAbsolute (globalPath ++ path)
+    reduceRelative path = reduceAbsolute (globalShallowPath ++ path)
 
     lookupVariable :: Name -> EvaluateM LookupVariableResponse
-    lookupVariable name = lookupVariableAbsolute name globalPath
+    lookupVariable name = do
+      globalDeepPath <- getDeepKey globalShallowPath
+      lookupVariableAbsolute name globalDeepPath
 
     makeUniqueName :: Name -> EvaluateM Name
-    makeUniqueName name = makeUniqueNameAbsolute globalPath name
+    makeUniqueName name = do
+      globalDeepPath <- getDeepKey globalShallowPath
+      makeUniqueNameAbsolute globalDeepPath name
 
     forcesViaCase :: Exp -> Maybe ExpKey
     forcesViaCase exp =
@@ -709,7 +736,7 @@ reduce exp = match
     match :: EvaluateM ReductionResult
     match = do
       alternatives <- sequence
-        [ sequence matchForcesViaCase
+        [ MT.runMaybeT matchForcesViaCase
         , sequence matchLiterals
         , sequence matchLet
         , sequence matchCond
@@ -723,13 +750,13 @@ reduce exp = match
         noMatchMsg :: String
         noMatchMsg = "reduce: Can't match " ++ pprint (deann @Exp exp) ++ ", AST: " ++ show (deann @Exp exp)
 
-    matchForcesViaCase
-      | Just targetPath <- forcesViaCase (deann exp)
-      , Just (env, subexp) <- envExpAt defaultEnvironment (deann exp) targetPath
-      , LetE decs body <- subexp
-      = Just $ replaceSelf Nothing $ letWrap decs $ modExpByKey targetPath (const body) (deann exp)
-      | otherwise
-      = empty
+    matchForcesViaCase :: MT.MaybeT EvaluateM ReductionResult
+    matchForcesViaCase = do
+      Just targetPath <- pure $ forcesViaCase (deann exp)
+      deepTargetPath <- MT.lift $ getDeepKey targetPath
+      Just (env, subexp) <- pure $ envExpAt defaultEnvironment (deann exp) deepTargetPath
+      LetE decs body <- pure subexp
+      MT.lift $ replaceSelf Nothing $ letWrap decs $ modExpByKey targetPath (const body) (deann exp)
 
     -- can't reduce literals
     matchLiterals
@@ -1007,9 +1034,63 @@ type MatchMonad a = Either MatchFailure a
 type MatchResult = MatchMonad MatchSuccess
   -}
 
-matchThroughReferences :: Pat -> Exp -> EvaluateM MatchResult
-matchThroughReferences pat exp = do
-  case matchPatKeyed pat exp of
-    res@(Left (NeedsReduction (patKey, expKey))) ->
-      undefined
-    res -> pure res
+type ReferenceMatchSuccess = [(Pat, Exp)]
+
+data ReferenceMatchFailure
+  = RMNeedsReduction (PatKey, ExpKey) -- Specific subexpression needs further reduction due to given subpattern before pattern can be determined to match or fail
+  | RMMismatch (PatKey, ExpKey) -- Pattern & expression both in WHNF and do not match - this pattern fails
+  | RMUnexpectedErrorMatch String (PatKey, ExpKey) -- For errors that shouldn't occur if the type-system is checking, e.g. tuple arity mismatch
+  | RMVariableHasPattern (ExpKey, Int)
+  | RMVariableHasGuards (ExpKey, Int)
+  | RMVariableNeedsReduction (ExpKey, Int) PatKey ExpKey
+  | RMIndexingError String
+  deriving (Show)
+
+matchFailureToRefMatchFailure :: ExpDeepKey -> MatchFailure -> ReferenceMatchFailure
+matchFailureToRefMatchFailure superPath (NeedsReduction (patKey, expKey)) = RMNeedsReduction (patKey, expKey)
+matchFailureToRefMatchFailure superPath (Mismatch (patKey, expKey)) = RMMismatch (patKey, expKey)
+matchFailureToRefMatchFailure superPath (UnexpectedErrorMatch msg (patKey, expKey)) =
+  RMUnexpectedErrorMatch msg (patKey, expKey)
+
+matchThroughReferences :: ExpDeepKey -> Pat -> Exp -> ExceptT ReferenceMatchFailure EvaluateM ReferenceMatchSuccess
+matchThroughReferences superPath pat exp = do
+  let matchResult = matchPatKeyed pat exp
+  let liftedMatchResult = toErrorM $ first (matchFailureToRefMatchFailure superPath) matchResult
+  liftedMatchResult `catchNR` \patKey expKey -> do
+    failedPat <- fromJustErr "matchThroughReferences: Failing pattern not found?" $ pat L.^? modPatByKeyA patKey
+    failedExp <- fromJustErr "matchThroughReferences: Failing expression not found?" $ exp L.^? modExpByKeyA expKey
+    undefined
+    {-
+    Left err@(NeedsReduction (patKey, expKey)) ->
+      -- Is failure due to an unexpanded variable?
+      let fromJustErr msg = maybe (error msg) id
+          failedPat = fromJustErr "matchThroughReferences: Failing pattern not found?" $ pat L.^? modPatByKeyA patKey
+          failedExp = fromJustErr "matchThroughReferences: Failing expression not found?" $ exp L.^? modExpByKeyA expKey
+      in
+      case failedExp of
+        VarE name -> do
+          lookupResponse <- lookupVariableAbsolute name superPath
+          -- Is unexpanded variable a value declaration?
+          case lookupResponse of
+            LookupVariableFound (ValueDeclaration (Just location) _ (GuardedB body) _) ->
+              throwError $ RMVariableHasGuards location
+            LookupVariableFound (ValueDeclaration (Just location) letPat (NormalB body) _) ->
+              -- Is variable fully reduced (no patterns on left side, no guards?)
+              case letPat of
+                VarP _ -> do
+                  subReferenceMatch <- matchThroughReferences location failedPat body
+                  case subReferenceMatch of
+                    _ -> undefined -- RMMatchFailure (NeedsReduction (subPatKey, subExpKey)) -> undefined
+                    _ -> pure subReferenceMatch
+                _ -> throwError $ RMVariableHasPattern location
+            _ -> throwError err
+        _ -> throwError err
+    Left err -> throwError err
+    -}
+  where
+    fromJustErr msg = maybe (throwError $ RMIndexingError msg) pure
+    toErrorM = either throwError pure
+    catchNR action handler =
+      catchError action $ \case
+        RMNeedsReduction (patKey, expKey) -> handler patKey expKey
+        err -> throwError err
