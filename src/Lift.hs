@@ -35,6 +35,8 @@ import "deriving-compat" Text.Show.Deriving
 
 import "keys" Data.Key (Key(..), Keyed(..), keyed, Adjustable(..))
 
+import "lens" Control.Lens qualified as L
+
 import "template-haskell" Language.Haskell.TH
 import "template-haskell" Language.Haskell.TH.Syntax
 
@@ -69,7 +71,7 @@ instance Adjustable ExpF where
   adjust g k fa = mapWithKey (\k' x -> if k == k' then g x else x) fa
 
 data ExpAltKey = EALet Int
-  deriving (Show)
+  deriving (Show, Lift)
 type ExpDeepKey = [Either ExpAltKey (Key ExpF)]
 
 appendAlt :: ExpDeepKey -> ExpAltKey -> ExpDeepKey
@@ -78,6 +80,9 @@ appendAlt deep addendum = deep ++ [Left addendum]
 appendShallow :: ExpDeepKey -> ExpKey -> ExpDeepKey
 appendShallow deep addendum = deep ++ map Right addendum
 
+deepKeyToShallow :: ExpDeepKey -> Maybe ExpKey
+deepKeyToShallow = traverse (either (const Nothing) Just)
+
 modExpByDeepKeyA :: Applicative m => ExpDeepKey -> (Exp -> m Exp) -> Exp -> m Exp
 modExpByDeepKeyA [] f = f
 modExpByDeepKeyA (Right normalKey : rest) f =
@@ -85,8 +90,29 @@ modExpByDeepKeyA (Right normalKey : rest) f =
 modExpByDeepKeyA (Left altKey : rest) f =
   modExpByAltKeyA altKey $ modExpByDeepKeyA rest f
 
-modAnnExpByDeepKeyA :: Applicative m => ExpDeepKey -> (RecKey Exp -> m (RecKey Exp)) -> RecKey Exp -> m (RecKey Exp)
-modAnnExpByDeepKeyA = undefined
+modAnnExpByDeepKeyA :: Applicative m => ExpDeepKey -> (ExpWithDeepKey -> m ExpWithDeepKey) -> ExpWithDeepKey -> m ExpWithDeepKey
+modAnnExpByDeepKeyA [] f exp = f exp
+modAnnExpByDeepKeyA (Right normalKey:rest) f exp =
+  let Fix (Pair keyConst expfa) = exp
+      modifyWithWitness (_, a) = (modAnnExpByDeepKeyA rest f a, a)
+      pureWithWitness a = (pure a, a)
+  in
+  fmap (Fix . Pair keyConst)
+    $ sequenceA
+    $ fmap fst
+    $ adjust modifyWithWitness normalKey
+    $ fmap pureWithWitness expfa
+modAnnExpByDeepKeyA (Left altKey:rest) f exp =
+  let Fix (Pair (Const deepKey) _) = exp
+      subModify exp =
+        fmap deann $
+          modAnnExpByDeepKeyA rest f $
+            annDeepKeys (deepKey ++ [Left altKey]) exp
+  in
+  fmap (annDeepKeys deepKey) $ modExpByAltKeyA altKey subModify (deann exp)
+
+modAnnExpByDeepKey :: ExpDeepKey -> (ExpWithDeepKey -> ExpWithDeepKey) -> ExpWithDeepKey -> ExpWithDeepKey
+modAnnExpByDeepKey key = L.over $ modAnnExpByDeepKeyA key
 
 modExpByAltKeyA :: Applicative m => ExpAltKey -> (Exp -> m Exp) -> Exp -> m Exp
 modExpByAltKeyA (EALet idx) f (LetE decls body) = do
@@ -181,7 +207,8 @@ prependKey :: a -> ([a], b) -> ([a], b)
 prependKey a = first (a :)
 
 type Ann a f = Product (Const a) f
-type With t a = Fix (Ann a (R.Base t))
+type With t a = Fix (WithF t a)
+type WithF t a = Ann a (R.Base t)
 type RecKey t = With t [Key (R.Base t)]
 
 annKeys :: (R.Recursive t, Keyed (R.Base t)) => t -> RecKey t
@@ -189,10 +216,21 @@ annKeys exp = R.ana go ([], exp)
   where
     go (prekeys, exp) = Pair (Const prekeys) (first (\x -> prekeys ++ [x]) <$> projectK exp)
 
+type ExpWithDeepKey = With Exp ExpDeepKey
+
+annDeepKeys :: ExpDeepKey -> Exp -> ExpWithDeepKey
+annDeepKeys precedingKey exp = R.hoist f $ annKeys exp
+  where
+    f :: forall a. Ann ExpKey ExpF a -> Ann ExpDeepKey ExpF a
+    f (Pair (Const key) expfa) = Pair (Const (appendShallow precedingKey key)) expfa
+
+autoAnnReplace :: ExpWithDeepKey -> Exp -> ExpWithDeepKey
+autoAnnReplace (Fix (Pair (Const deepKey) _)) replacement = annDeepKeys deepKey replacement
+
 deann :: (R.Corecursive t, f ~ R.Base t) => Fix (Ann a f) -> t
 deann = R.hoist (\(Pair _ tf) -> tf)
 
-deannWrapped :: R.Corecursive t => R.Base t (RecKey t) -> t
+deannWrapped :: R.Corecursive t => R.Base t (With t a) -> t
 deannWrapped = R.embed . fmap deann
 
 toKeyPair :: Fix (Ann a f) -> (a, f (Fix (Ann a f)))

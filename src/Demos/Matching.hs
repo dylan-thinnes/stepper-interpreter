@@ -25,7 +25,7 @@ e2eMatchDemo mpat mexp = do
         --, "expKey: " ++ show expKey
         --, ""
         , P.boldByANSI "pattern: " ++ P.pprintColoured (P.cleanNames $ P.attachAnn patKey (P.Annotation P.orange Nothing) (P.noann pat))
-        , P.boldByANSI "expression: ", P.pprintColoured (P.cleanNames $ P.attachAnn expKey (P.Annotation P.orange Nothing) (P.noann exp))
+        , P.boldByANSI "expression: ", P.pprintColoured (P.cleanNames $ P.attachAnnDeepExp expKey (P.Annotation P.orange Nothing) (P.noann exp))
         ]
     Left (NeedsReduction (patKey, expKey)) ->
       runIO $ putStrLn $ unlines
@@ -35,7 +35,7 @@ e2eMatchDemo mpat mexp = do
         --, "expKey: " ++ show expKey
         --, ""
         , P.boldByANSI "pattern: " ++ P.pprintColoured (P.cleanNames $ P.attachAnn patKey (P.Annotation P.purple Nothing) (P.noann pat))
-        , P.boldByANSI "expression: ", P.pprintColoured (P.cleanNames $ P.attachAnn expKey (P.Annotation P.purple Nothing) (P.noann exp))
+        , P.boldByANSI "expression: ", P.pprintColoured (P.cleanNames $ P.attachAnnDeepExp expKey (P.Annotation P.purple Nothing) (P.noann exp))
         ]
     Left (UnexpectedErrorMatch msg (patKey, expKey)) ->
       runIO $ putStrLn $ unlines
@@ -45,7 +45,7 @@ e2eMatchDemo mpat mexp = do
         --, "expKey: " ++ show expKey
         --, ""
         , P.boldByANSI "pattern: " ++ P.pprintColoured (P.cleanNames $ P.attachAnn patKey (P.Annotation P.red Nothing) (P.noann pat))
-        , P.boldByANSI "expression: ", P.pprintColoured (P.cleanNames $ P.attachAnn expKey (P.Annotation P.red Nothing) (P.noann exp))
+        , P.boldByANSI "expression: ", P.pprintColoured (P.cleanNames $ P.attachAnnDeepExp expKey (P.Annotation P.red Nothing) (P.noann exp))
         ]
     Right bound -> do
       runIO $ putStrLn $ unlines

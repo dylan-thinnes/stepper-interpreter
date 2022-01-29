@@ -94,9 +94,9 @@ patNames' pat = [name | name@(Name _ flavour@(NameU _)) <- childrenBi pat]
 -- - The pattern and the expression are incompatible for pattern matching in
 --   some way that the type system should have disallowed beforehand
 data MatchFailure
-  = Mismatch (PatKey, ExpKey) -- Pattern & expression both in WHNF and do not match - this pattern fails
-  | NeedsReduction (PatKey, ExpKey) -- Specific subexpression needs further reduction due to given subpattern before pattern can be determined to match or fail
-  | UnexpectedErrorMatch String (PatKey, ExpKey) -- For errors that shouldn't occur if the type-system is checking, e.g. tuple arity mismatch
+  = Mismatch (PatKey, ExpDeepKey) -- Pattern & expression both in WHNF and do not match - this pattern fails
+  | NeedsReduction (PatKey, ExpDeepKey) -- Specific subexpression needs further reduction due to given subpattern before pattern can be determined to match or fail
+  | UnexpectedErrorMatch String (PatKey, ExpDeepKey) -- For errors that shouldn't occur if the type-system is checking, e.g. tuple arity mismatch
   deriving (Show, Lift)
 
 type MatchSuccess = [(Pat, Exp)]
@@ -107,9 +107,9 @@ matchPatKeyed :: Pat -> Exp -> MatchResult
 matchPatKeyed = matchPatKeyedConfigurable False
 
 matchPatKeyedConfigurable :: Bool -> Pat -> Exp -> MatchResult
-matchPatKeyedConfigurable goThroughLet pat exp = go (annKeys pat) (annKeys exp)
+matchPatKeyedConfigurable goThroughLet pat exp = go (annKeys pat) (annDeepKeys [] exp)
   where
-    go :: RecKey Pat -> RecKey Exp -> MatchResult
+    go :: RecKey Pat -> ExpWithDeepKey -> MatchResult
     go annPat annExp = matchLists annPat annExp
       where
         (patKey, patFAnn) = toKeyPair annPat
@@ -122,7 +122,7 @@ matchPatKeyedConfigurable goThroughLet pat exp = go (annKeys pat) (annKeys exp)
         unexpectedError :: String -> MatchMonad a
         unexpectedError msg = Left $ UnexpectedErrorMatch msg (patKey, expKey)
 
-        matchLists :: RecKey Pat -> RecKey Exp -> MatchResult
+        matchLists :: RecKey Pat -> ExpWithDeepKey -> MatchResult
         matchLists pat exp =
           let patList = patToIsListKeyed pat
               expList = expToIsListKeyed exp
@@ -150,7 +150,7 @@ matchPatKeyedConfigurable goThroughLet pat exp = go (annKeys pat) (annKeys exp)
             -- Try matches by other means
             _ -> match patFAnn expFAnn
 
-        match :: PatF (RecKey Pat) -> ExpF (RecKey Exp) -> MatchResult
+        match :: PatF (RecKey Pat) -> ExpF ExpWithDeepKey -> MatchResult
         match (LitPF pat) (LitEF exp)
           | pat == exp = Right []
           | otherwise = mismatch
@@ -252,7 +252,7 @@ flattenAppsF _ = Nothing
 flattenApps :: Exp -> FlattenedApps Exp
 flattenApps = flattenAppsG id
 
-flattenAppsKeyed :: RecKey Exp -> FlattenedApps (RecKey Exp)
+flattenAppsKeyed :: With Exp a -> FlattenedApps (With Exp a)
 flattenAppsKeyed = flattenAppsG (\(Pair _ expf) -> expf)
 
 flattenAppsG
@@ -291,7 +291,7 @@ isList _ = True
 expToIsList :: Exp -> IsList Exp
 expToIsList = expToIsListG id
 
-expToIsListKeyed :: RecKey Exp -> IsList (RecKey Exp)
+expToIsListKeyed :: With Exp a -> IsList (With Exp a)
 expToIsListKeyed = expToIsListG (\(Pair _ expf) -> expf)
 
 expToIsListG
@@ -504,28 +504,18 @@ type EvaluateM = ReaderT EvaluationInfo (Except String)
 
 data EvaluationInfo = EvaluationInfo
   { _lookupVariable :: Name -> ExpDeepKey -> LookupVariableResponse
-  , _reduce :: ExpKey -> EvaluateM ReductionResult
-  , _replace :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
+  , _reduce :: ExpDeepKey -> EvaluateM ReductionResult
+  , _replace :: Maybe String -> ExpDeepKey -> Exp -> EvaluateM ReductionResult
   , _makeUniqueName :: ExpDeepKey -> Name -> Name
-  , _precedingDeepKey :: ExpDeepKey
   }
-
-deepenAltKey :: ExpKey -> ExpAltKey -> EvaluateM a -> EvaluateM a
-deepenAltKey above alt action = local modifyInfo action
-  where
-    modifyInfo info@EvaluationInfo { _precedingDeepKey } =
-      info { _precedingDeepKey = appendAlt (appendShallow _precedingDeepKey above) alt }
-
-getDeepKey :: ExpKey -> EvaluateM ExpDeepKey
-getDeepKey lastKey = asks $ \info -> appendShallow (_precedingDeepKey info) lastKey
 
 lookupVariableAbsolute :: Name -> ExpDeepKey -> EvaluateM LookupVariableResponse
 lookupVariableAbsolute name path = asks $ \f -> _lookupVariable f name path
 
-reduceAbsolute :: ExpKey -> EvaluateM ReductionResult
+reduceAbsolute :: ExpDeepKey -> EvaluateM ReductionResult
 reduceAbsolute path = ask >>= \f -> _reduce f path
 
-replaceAbsolute :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
+replaceAbsolute :: Maybe String -> ExpDeepKey -> Exp -> EvaluateM ReductionResult
 replaceAbsolute reason path exp = ask >>= \f -> _replace f reason path exp
 
 makeUniqueNameAbsolute :: ExpDeepKey -> Name -> EvaluateM Name
@@ -560,34 +550,30 @@ instance Applicative ReductionResultF where
 evaluate :: Environment -> Exp -> Either String ReductionResult
 evaluate topEnv topExp = runExcept $ runReaderT (reduce annotated) haltHandlers
   where
-    annotated = annKeys topExp
+    annotated = annDeepKeys [] topExp
 
     haltHandlers =
       EvaluationInfo {
         _lookupVariable,
         _reduce,
         _replace,
-        _makeUniqueName,
-        _precedingDeepKey = []
+        _makeUniqueName
       }
 
-    _reduce :: ExpKey -> EvaluateM ReductionResult
+    _reduce :: ExpDeepKey -> EvaluateM ReductionResult
     _reduce key =
-      case modAnnExpByKeyA key Left annotated of
+      case modAnnExpByDeepKeyA key Left annotated of
         Left targetNode -> reduce targetNode
         Right _ -> throwError $ "Error: Couldn't find index: " ++ show key
 
-    modifyExp :: (RecKey Exp -> EvaluateM ReductionResult) -> ExpKey -> EvaluateM ReductionResult
+    modifyExp :: (ExpWithDeepKey -> EvaluateM ReductionResult) -> ExpDeepKey -> EvaluateM ReductionResult
     modifyExp modifier path =
-      getCompose $
-        adjustRecursiveGGA
-          (\(Pair cann ffix) -> ffix)
-          (\f k (Pair cann ffix) -> adjust f k ffix)
-          path
-          (Compose . modifier)
-          annotated
+      let composedModifier :: ExpWithDeepKey -> Compose EvaluateM ReductionResultF ExpWithDeepKey
+          composedModifier expWDK@(Fix (Pair (Const deepKey) _)) = fmap (annDeepKeys deepKey) $ Compose $ modifier expWDK
+      in
+      getCompose $ fmap deann $ modAnnExpByDeepKeyA path composedModifier annotated
 
-    _replace :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
+    _replace :: Maybe String -> ExpDeepKey -> Exp -> EvaluateM ReductionResult
     _replace reason key exp = modifyExp (const $ pure $ NewlyReduced reason exp) key
 
     _lookupVariable :: Name -> ExpDeepKey -> LookupVariableResponse
@@ -697,10 +683,10 @@ whnf exp
   | otherwise
   = True
 
-reduce :: RecKey Exp -> EvaluateM ReductionResult
+reduce :: ExpWithDeepKey -> EvaluateM ReductionResult
 reduce exp = match
   where
-    Fix (Pair (Const globalShallowPath) expf) = exp
+    Fix (Pair (Const globalPath) expf) = exp
 
     cannotReduce :: EvaluateM ReductionResult
     cannotReduce = pure $ CannotReduce $ deann exp
@@ -708,21 +694,18 @@ reduce exp = match
     replaceSelf :: Maybe String -> Exp -> EvaluateM ReductionResult
     replaceSelf reason = replaceRelative reason []
 
-    replaceRelative :: Maybe String -> ExpKey -> Exp -> EvaluateM ReductionResult
-    replaceRelative reason path = replaceAbsolute reason (globalShallowPath ++ path)
+    replaceRelative :: Maybe String -> ExpDeepKey -> Exp -> EvaluateM ReductionResult
+    replaceRelative reason path = replaceAbsolute reason (globalPath ++ path)
 
-    reduceRelative :: ExpKey -> EvaluateM ReductionResult
-    reduceRelative path = reduceAbsolute (globalShallowPath ++ path)
+    reduceRelative :: ExpDeepKey -> EvaluateM ReductionResult
+    reduceRelative path = reduceAbsolute (globalPath ++ path)
 
     lookupVariable :: Name -> EvaluateM LookupVariableResponse
     lookupVariable name = do
-      globalDeepPath <- getDeepKey globalShallowPath
-      lookupVariableAbsolute name globalDeepPath
+      lookupVariableAbsolute name globalPath
 
     makeUniqueName :: Name -> EvaluateM Name
-    makeUniqueName name = do
-      globalDeepPath <- getDeepKey globalShallowPath
-      makeUniqueNameAbsolute globalDeepPath name
+    makeUniqueName name = makeUniqueNameAbsolute globalPath name
 
     forcesViaCase :: Exp -> Maybe ExpKey
     forcesViaCase exp =
@@ -751,8 +734,8 @@ reduce exp = match
     matchForcesViaCase :: MT.MaybeT EvaluateM ReductionResult
     matchForcesViaCase = do
       Just targetPath <- pure $ forcesViaCase (deann exp)
-      deepTargetPath <- MT.lift $ getDeepKey targetPath
-      Just (env, subexp) <- pure $ envExpAt defaultEnvironment (deann exp) deepTargetPath
+      -- deepTargetPath <- MT.lift $ getDeepKey targetPath
+      Just (env, subexp) <- pure $ envExpAt defaultEnvironment (deann exp) (appendShallow globalPath targetPath)
       LetE decs body <- pure subexp
       MT.lift $ replaceSelf Nothing $ letWrap decs $ modExpByKey targetPath (const body) (deann exp)
 
@@ -803,7 +786,7 @@ reduce exp = match
           | (simpleDecl:rest, complexDecls) <- partitionSimpleDecls decls
           -> replaceSelf (Just "Simplify simple decl") $ letWrap (map snd rest ++ complexDecls) (applySimpleDecl (fst simpleDecl) (deann body))
           | otherwise
-          -> reduceRelative [bodyIdx]
+          -> reduceRelative [Right bodyIdx]
       | otherwise
       = empty
 
@@ -815,7 +798,7 @@ reduce exp = match
           Right _ -> replaceSelf Nothing $ deann true
           Left (Mismatch _) -> replaceSelf Nothing $ deann false
           Left (NeedsReduction (patKey, expKey)) ->
-            reduceRelative (condIdx : expKey)
+            reduceRelative (Right condIdx : expKey)
           Left (UnexpectedErrorMatch _ _) ->
             throwError "CondE: Unexpected error in matching process - this should not happen!"
       | otherwise
@@ -839,7 +822,7 @@ reduce exp = match
                 Left (Mismatch (patKey, expKey)) ->
                   tryNext
                 Left (NeedsReduction (patKey, expKey)) ->
-                  reduceRelative (targetIdx : expKey)
+                  reduceRelative (Right targetIdx : expKey)
                 Left (UnexpectedErrorMatch _ _) ->
                   error "Unexpected error in matching process - this should not happen!"
         in
@@ -849,7 +832,7 @@ reduce exp = match
 
     -- handle function application
     matchFunctionApplication = do
-      FlattenedApps { func, args, intermediateFuncs } <- pure $ flattenAppsKeyed (annKeys $ deann @Exp exp)
+      FlattenedApps { func, args, intermediateFuncs } <- pure $ flattenAppsKeyed (annDeepKeys [] $ deann @Exp exp)
       if
         | Just name <- getVarExp $ deann func
         -> do
@@ -891,7 +874,7 @@ reduce exp = match
                   headArgs = take cardinality $ map (fmap deann) args
                   remainingArgs = drop cardinality $ map (fmap deann) args
 
-                  targetFunctionPath :: ExpKey
+                  targetFunctionPath :: ExpDeepKey
                   (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
 
                   inexhaustivePatternMatch :: EvaluateM ReductionResult
@@ -955,7 +938,7 @@ reduce exp = match
                   headArgs = take cardinality $ map (fmap deann) args
                   remainingArgs = drop cardinality $ map (fmap deann) args
 
-                  targetFunctionPath :: ExpKey
+                  targetFunctionPath :: ExpDeepKey
                   (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc cardinality intermediateFuncs
 
                   inexhaustivePatternMatch :: EvaluateM ReductionResult
@@ -995,7 +978,7 @@ reduce exp = match
               let arg1, arg2 :: Maybe Exp
                   (arg1:arg2:_) = map (fmap deann) args
 
-                  targetFunctionPath :: ExpKey
+                  targetFunctionPath :: ExpDeepKey
                   (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc 2 intermediateFuncs
               in
               case (arg1, arg2) of
@@ -1044,6 +1027,7 @@ data ReferenceMatchFailure
   | RMIndexingError String
   deriving (Show)
 
+  {-
 matchFailureToRefMatchFailure :: ExpDeepKey -> MatchFailure -> ReferenceMatchFailure
 matchFailureToRefMatchFailure superPath (NeedsReduction (patKey, expKey)) = RMNeedsReduction (patKey, expKey)
 matchFailureToRefMatchFailure superPath (Mismatch (patKey, expKey)) = RMMismatch (patKey, expKey)
@@ -1092,3 +1076,4 @@ matchThroughReferences superPath pat exp = do
       catchError action $ \case
         RMNeedsReduction (patKey, expKey) -> handler patKey expKey
         err -> throwError err
+        -}

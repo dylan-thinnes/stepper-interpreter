@@ -56,6 +56,12 @@ attachAnn key ann = adjustRecursiveG modify key setAnn
 attachAnnExp :: ExpKey -> Annotation -> AnnotatedExp -> AnnotatedExp
 attachAnnExp = attachAnn
 
+attachAnnDeepExp :: ExpDeepKey -> Annotation -> AnnotatedExp -> AnnotatedExp
+attachAnnDeepExp deepKey ann =
+  case deepKeyToShallow deepKey of
+    Nothing -> id
+    Just key -> attachAnn key ann
+
 attachAnnPat :: PatKey -> Annotation -> AnnotatedPat -> AnnotatedPat
 attachAnnPat = attachAnn
 
