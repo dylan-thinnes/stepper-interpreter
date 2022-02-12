@@ -103,125 +103,131 @@ type MatchSuccess = [(Pat, Exp)]
 type MatchMonad a = Either MatchFailure a
 type MatchResult = MatchMonad MatchSuccess
 
-matchPatKeyed :: Pat -> Exp -> MatchResult
+matchPat :: Pat -> Exp -> MatchResult
+matchPat = matchPatConfigurable False
+
+matchPatConfigurable :: Bool -> Pat -> Exp -> MatchResult
+matchPatConfigurable goThroughLet pat exp = matchPatKeyedConfigurable goThroughLet (annKeys pat) (annDeepKeys [] exp)
+
+matchPatKeyed :: RecKey Pat -> ExpWithDeepKey -> MatchResult
 matchPatKeyed = matchPatKeyedConfigurable False
 
-matchPatKeyedConfigurable :: Bool -> Pat -> Exp -> MatchResult
-matchPatKeyedConfigurable goThroughLet pat exp = go (annKeys pat) (annDeepKeys [] exp)
+matchPatKeyedConfigurable :: Bool -> RecKey Pat -> ExpWithDeepKey -> MatchResult
+matchPatKeyedConfigurable goThroughLet = go
   where
     go :: RecKey Pat -> ExpWithDeepKey -> MatchResult
     go annPat annExp = matchLists annPat annExp
       where
-        (patKey, patFAnn) = toKeyPair annPat
-        (expKey, expFAnn) = toKeyPair annExp
+      (patKey, patFAnn) = toKeyPair annPat
+      (expKey, expFAnn) = toKeyPair annExp
 
-        mismatch, needsReduction :: MatchMonad a
-        mismatch = Left $ Mismatch (patKey, expKey)
-        needsReduction = Left $ NeedsReduction (patKey, expKey)
+      mismatch, needsReduction :: MatchMonad a
+      mismatch = Left $ Mismatch (patKey, expKey)
+      needsReduction = Left $ NeedsReduction (patKey, expKey)
 
-        unexpectedError :: String -> MatchMonad a
-        unexpectedError msg = Left $ UnexpectedErrorMatch msg (patKey, expKey)
+      unexpectedError :: String -> MatchMonad a
+      unexpectedError msg = Left $ UnexpectedErrorMatch msg (patKey, expKey)
 
-        matchLists :: RecKey Pat -> ExpWithDeepKey -> MatchResult
-        matchLists pat exp =
-          let patList = patToIsListKeyed pat
-              expList = expToIsListKeyed exp
-          in
-          case (patList, expList) of
-            -- Matching conses
-            (IsCons head1 tail1, IsCons head2 tail2) ->
-              zipConcatM go [head1, tail1] [head2, tail2]
-            (IsCons head1 tail1, IsLiteral (head2:tail2)) ->
-              zipConcatM go [head1, tail1] [head2, fromKeyPair expKey $ ListEF tail2]
-            (IsLiteral (head1:tail1), IsCons head2 tail2) ->
-              zipConcatM go [head1, fromKeyPair patKey $ ListPF tail1] [head2, tail2]
+      matchLists :: RecKey Pat -> ExpWithDeepKey -> MatchResult
+      matchLists pat exp =
+        let patList = patToIsListKeyed pat
+            expList = expToIsListKeyed exp
+        in
+        case (patList, expList) of
+          -- Matching conses
+          (IsCons head1 tail1, IsCons head2 tail2) ->
+            zipConcatM go [head1, tail1] [head2, tail2]
+          (IsCons head1 tail1, IsLiteral (head2:tail2)) ->
+            zipConcatM go [head1, tail1] [head2, fromKeyPair expKey $ ListEF tail2]
+          (IsLiteral (head1:tail1), IsCons head2 tail2) ->
+            zipConcatM go [head1, fromKeyPair patKey $ ListPF tail1] [head2, tail2]
 
-            -- Matching empty lists
-            (IsNil _, IsNil _) -> Right []
-            (IsNil _, IsLiteral []) -> Right []
-            (IsLiteral [], IsNil _) -> Right []
+          -- Matching empty lists
+          (IsNil _, IsNil _) -> Right []
+          (IsNil _, IsLiteral []) -> Right []
+          (IsLiteral [], IsNil _) -> Right []
 
-            -- Mismatching conses to empty lists
-            (IsCons _ _, IsNil _) -> mismatch
-            (IsNil _, IsCons _ _) -> mismatch
-            (IsCons _ _, IsLiteral []) -> mismatch
-            (IsLiteral [], IsCons _ _) -> mismatch
+          -- Mismatching conses to empty lists
+          (IsCons _ _, IsNil _) -> mismatch
+          (IsNil _, IsCons _ _) -> mismatch
+          (IsCons _ _, IsLiteral []) -> mismatch
+          (IsLiteral [], IsCons _ _) -> mismatch
 
-            -- Try matches by other means
-            _ -> match patFAnn expFAnn
+          -- Try matches by other means
+          _ -> match patFAnn expFAnn
 
-        match :: PatF (RecKey Pat) -> ExpF ExpWithDeepKey -> MatchResult
-        match (LitPF pat) (LitEF exp)
-          | pat == exp = Right []
-          | otherwise = mismatch
-        match (VarPF name) exp = Right [(VarP name, deannWrapped exp)]
-        match (TupPF pats) (TupEF mexps)
-          | length pats /= length mexps = unexpectedError "Tuple pattern-expression arity mismatch."
-          | otherwise = do
-              -- If there are any Nothing expressions, the tuple expression is partially applied and we short circuit with an error
-              let onlyJust :: Maybe a -> MatchMonad a
-                  onlyJust Nothing = unexpectedError "Tuple expression is not fully applied (e.g. is a partially applied tuple like (,,) or (1,))."
-                  onlyJust (Just a) = pure a
-              exps <- traverse onlyJust mexps
-              zipConcatM go pats exps
-        match (UnboxedTupPF _) _ = error "matchPatKeyed: Unsupported UnboxedTupP pattern in AST"
-        match (UnboxedSumPF _ _ _) _ = error "matchPatKeyed: Unsupported UnboxedSumP pattern in AST"
-        match (ConPF patConName pats) _
-          | FlattenedApps { func, args = margs } <- flattenAppsKeyed annExp
-          , let args = catMaybes margs
-          , (ConE expConName) <- deann func
-          = if expConName /= patConName
-              then mismatch -- if constructors are different, assume that they belong to the same ADT & are mismatched
-                            -- TODO: How does this interact with PatternSynonyms?
-                   -- if the pattern & expression constructors come from different ADTS, we'd return: `unexpectedError "Pattern and expression have different constructor names."`
-                   -- alas, we can't do this comparison here, for now
-              else case compare (length pats) (length args) of
-                LT -> unexpectedError "Data constructor in expression is applied to too many arguments."
-                GT -> unexpectedError "Data constructor in expression isn't fully applied."
-                EQ -> zipConcatM go pats args
-        match (InfixPF patL patConName patR) _
-          | let pats = [patL, patR]
-          , FlattenedApps { func, args = margs } <- flattenAppsKeyed annExp
-          , let args = catMaybes margs
-          , (ConE expConName) <- deann func
-          = if expConName /= patConName
-              then mismatch -- if constructors are different, assume that they belong to the same ADT & are mismatched
-                            -- TODO: How does this interact with PatternSynonyms?
-                   -- if the pattern & expression constructors come from different ADTS, we'd return: `unexpectedError "Pattern and expression have different constructor names."`
-                   -- alas, we can't do this comparison here, for now
-              else case compare (length pats) (length args) of
-                LT -> unexpectedError "Data constructor in expression is applied to too many arguments."
-                GT -> unexpectedError "Data constructor in expression isn't fully applied."
-                EQ -> zipConcatM go pats args
-        match (UInfixPF patL _ patR) _ = error "matchPatKeyed: Unsupported pat UInfixP"
-        match (ParensPF pat) exp = go pat annExp
-        match pat (ParensEF exp) = go annPat exp
-        match (TildePF pat) exp = Right [(deann pat, deannWrapped exp)] -- lazy patterns always match, deferred to a "let-desugaring"
-        match (BangPF pat) exp = error "matchPatKeyed: Unsupported pat BangP"
-        match (AsPF name pat) exp = do
-          submatches <- go pat annExp
-          pure $ (VarP name, deannWrapped exp) : submatches
-        match WildPF _ = Right []
-        match (RecPF _ fieldPats) _ = error "matchPatKeyed: Unsupported pat RecP" -- TODO: Urgently need to support field patterns
-        match (ListPF pats) (ListEF exps) -- TODO: handle conses <=> list literals
-          | length pats /= length exps = unexpectedError "List pattern and list expression have different lengths."
-          | otherwise = zipConcatM go pats exps
-        match (SigPF pat type_) _ = error "matchPatKeyed: Unsupported pat SigP"
-        match (ViewPF exp pat) _ = error "matchPatKeyed: Unsupported pat ViewP"
+      match :: PatF (RecKey Pat) -> ExpF ExpWithDeepKey -> MatchResult
+      match (LitPF pat) (LitEF exp)
+        | pat == exp = Right []
+        | otherwise = mismatch
+      match (VarPF name) exp = Right [(VarP name, deannWrapped exp)]
+      match (TupPF pats) (TupEF mexps)
+        | length pats /= length mexps = unexpectedError "Tuple pattern-expression arity mismatch."
+        | otherwise = do
+            -- If there are any Nothing expressions, the tuple expression is partially applied and we short circuit with an error
+            let onlyJust :: Maybe a -> MatchMonad a
+                onlyJust Nothing = unexpectedError "Tuple expression is not fully applied (e.g. is a partially applied tuple like (,,) or (1,))."
+                onlyJust (Just a) = pure a
+            exps <- traverse onlyJust mexps
+            zipConcatM go pats exps
+      match (UnboxedTupPF _) _ = error "matchPatKeyed: Unsupported UnboxedTupP pattern in AST"
+      match (UnboxedSumPF _ _ _) _ = error "matchPatKeyed: Unsupported UnboxedSumP pattern in AST"
+      match (ConPF patConName pats) _
+        | FlattenedApps { func, args = margs } <- flattenAppsKeyed annExp
+        , let args = catMaybes margs
+        , (ConE expConName) <- deann func
+        = if expConName /= patConName
+            then mismatch -- if constructors are different, assume that they belong to the same ADT & are mismatched
+                          -- TODO: How does this interact with PatternSynonyms?
+                 -- if the pattern & expression constructors come from different ADTS, we'd return: `unexpectedError "Pattern and expression have different constructor names."`
+                 -- alas, we can't do this comparison here, for now
+            else case compare (length pats) (length args) of
+              LT -> unexpectedError "Data constructor in expression is applied to too many arguments."
+              GT -> unexpectedError "Data constructor in expression isn't fully applied."
+              EQ -> zipConcatM go pats args
+      match (InfixPF patL patConName patR) _
+        | let pats = [patL, patR]
+        , FlattenedApps { func, args = margs } <- flattenAppsKeyed annExp
+        , let args = catMaybes margs
+        , (ConE expConName) <- deann func
+        = if expConName /= patConName
+            then mismatch -- if constructors are different, assume that they belong to the same ADT & are mismatched
+                          -- TODO: How does this interact with PatternSynonyms?
+                 -- if the pattern & expression constructors come from different ADTS, we'd return: `unexpectedError "Pattern and expression have different constructor names."`
+                 -- alas, we can't do this comparison here, for now
+            else case compare (length pats) (length args) of
+              LT -> unexpectedError "Data constructor in expression is applied to too many arguments."
+              GT -> unexpectedError "Data constructor in expression isn't fully applied."
+              EQ -> zipConcatM go pats args
+      match (UInfixPF patL _ patR) _ = error "matchPatKeyed: Unsupported pat UInfixP"
+      match (ParensPF pat) exp = go pat annExp
+      match pat (ParensEF exp) = go annPat exp
+      match (TildePF pat) exp = Right [(deann pat, deannWrapped exp)] -- lazy patterns always match, deferred to a "let-desugaring"
+      match (BangPF pat) exp = error "matchPatKeyed: Unsupported pat BangP"
+      match (AsPF name pat) exp = do
+        submatches <- go pat annExp
+        pure $ (VarP name, deannWrapped exp) : submatches
+      match WildPF _ = Right []
+      match (RecPF _ fieldPats) _ = error "matchPatKeyed: Unsupported pat RecP" -- TODO: Urgently need to support field patterns
+      match (ListPF pats) (ListEF exps) -- TODO: handle conses <=> list literals
+        | length pats /= length exps = unexpectedError "List pattern and list expression have different lengths."
+        | otherwise = zipConcatM go pats exps
+      match (SigPF pat type_) _ = error "matchPatKeyed: Unsupported pat SigP"
+      match (ViewPF exp pat) _ = error "matchPatKeyed: Unsupported pat ViewP"
 
-        -- TODO: How does matching through lets & other scope-affecting nodes work? Must consider.
-        -- Ans: It messes with matching CONSIDERABLY, added flag to enable it in demos
-        match pat (LetEF _ exp) | goThroughLet = go annPat exp
+      -- TODO: How does matching through lets & other scope-affecting nodes work? Must consider.
+      -- Ans: It messes with matching CONSIDERABLY, added flag to enable it in demos
+      match pat (LetEF _ exp) | goThroughLet = go annPat exp
 
-        match pat exp
-          -- TODO: Definitely unfinished cases here somewhere...
-          | FlattenedApps { func } <- flattenAppsKeyed annExp
-          , (ConE _) <- deann func
-          = mismatch
-          | (ConP _ _) <- deann annPat -- May be too aggressive...
-          = needsReduction
-          | otherwise
-          = needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
+      match pat exp
+        -- TODO: Definitely unfinished cases here somewhere...
+        | FlattenedApps { func } <- flattenAppsKeyed annExp
+        , (ConE _) <- deann func
+        = mismatch
+        | (ConP _ _) <- deann annPat -- May be too aggressive...
+        = needsReduction
+        | otherwise
+        = needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
 
 patExpPairToValDecl :: (Pat, Exp) -> Maybe Dec
 patExpPairToValDecl (VarP patName, VarE expName) | patName == expName = Nothing
@@ -754,7 +760,7 @@ reduce exp = match
           | let extractMatchingPat orig@(ValD pat (NormalB exp) _) -- TODO: handle guards
                   | VarP _ <- pat
                   = Left orig
-                  | Right matches <- matchPatKeyed pat exp
+                  | Right matches <- matchPat pat exp
                   = Right matches
                 extractMatchingPat orig = Left orig
 
@@ -794,7 +800,7 @@ reduce exp = match
     matchCond
       | (CondEF (condIdx, cond) (_, true) (_, false)) <- keyed expf
       = Just
-      $ case matchPatKeyed (ConP 'True []) (deann cond) of
+      $ case matchPat (ConP 'True []) (deann cond) of
           Right _ -> replaceSelf Nothing $ deann true
           Left (Mismatch _) -> replaceSelf Nothing $ deann false
           Left (NeedsReduction (patKey, expKey)) ->
@@ -816,7 +822,7 @@ reduce exp = match
                   explodeIntoLet boundVars =
                     letWrap (mapMaybe patExpPairToValDecl boundVars ++ decls) body
               in
-              case matchPatKeyed pat (deann target) of
+              case matchPat pat (deann target) of
                 Right boundVars ->
                   replaceSelf Nothing $ explodeIntoLet boundVars
                 Left (Mismatch (patKey, expKey)) ->
@@ -855,7 +861,7 @@ reduce exp = match
                   clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)
                   clauseToHandler (Clause pats body wheres) args =
                     let NormalB expBody = body -- TODO: Handle guards
-                        clauseMatches = zip [0..] $ zipWith matchPatKeyed pats args
+                        clauseMatches = zip [0..] $ zipWith matchPat pats args
                         go [] = Right []
                         go ((_, Right matches):rest) = (matches ++) <$> go rest
                         go ((i, Left err):rest) = Left (i, err)
@@ -919,7 +925,7 @@ reduce exp = match
                   clauseToHandler :: Clause -> [Exp] -> Either (Int, MatchFailure) (Exp, [Dec], MatchSuccess)
                   clauseToHandler (Clause pats body wheres) args =
                     let NormalB expBody = body -- TODO: Handle guards
-                        clauseMatches = zip [0..] $ zipWith matchPatKeyed pats args
+                        clauseMatches = zip [0..] $ zipWith matchPat pats args
                         go [] = Right []
                         go ((_, Right matches):rest) = (matches ++) <$> go rest
                         go ((i, Left err):rest) = Left (i, err)

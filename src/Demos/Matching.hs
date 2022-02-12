@@ -16,7 +16,7 @@ e2eMatchDemo :: Q Pat -> Q Exp -> Q Exp
 e2eMatchDemo mpat mexp = do
   pat <- mpat
   exp <- mexp
-  case matchPatKeyedConfigurable True pat exp of
+  case matchPatConfigurable True pat exp of
     Left (Mismatch (patKey, expKey)) ->
       runIO $ putStrLn $ unlines
         [ P.colorByANSI P.orange "Following pattern and expression do not match."
@@ -80,7 +80,7 @@ e2eMatchExample = do
 p = $(lift =<< [p| (Just 2, Just Nothing) |])
 e = $(lift =<< [e| (Just 2, Just x) |])
 (patkey, expkey) =
-  case matchPatKeyedConfigurable True p e of
+  case matchPatConfigurable True p e of
     Left (Mismatch keys) -> keys
     Left (NeedsReduction keys) -> keys
     Left (UnexpectedErrorMatch msg keys) -> keys
