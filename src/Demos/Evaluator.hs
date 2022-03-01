@@ -148,6 +148,14 @@ runFoldlSum = run' [d|
     foldl' (+) 0 [1,2,3,4]
   |]
 
+runFoldlSum' :: IO (Either String ReductionResult)
+runFoldlSum' = run' [d|
+  foldl' f acc (y:rest) = seq acc (foldl' f (f acc y) rest)
+  foldl' f acc [] = acc
+  exp =
+    foldl' (+) 0 [1,2,3,4]
+  |]
+
 run' :: DecsQ -> IO (Either String ReductionResult)
 run' decsQ = do
   decs <- runQ decsQ
