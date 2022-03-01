@@ -1,4 +1,5 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE PackageImports #-}
 module Demos.Matching where
@@ -10,6 +11,7 @@ import "template-haskell" Language.Haskell.TH.Syntax (Lift(..), Name(..), NameFl
 
 import Ppr qualified as P
 import Evaluator
+import Lift
 
 -- Demonstration of matching
 e2eMatchDemo :: Q Pat -> Q Exp -> Q Exp
@@ -62,7 +64,7 @@ e2eMatchDemo mpat mexp = do
         putStr "Pattern: "
         putStrLn $ P.pprintColoured pat
         putStr "Expression: "
-        putStrLn $ P.pprintColoured exp
+        putStrLn $ P.pprintColoured (deann @Exp exp)
   lift ()
 
 e2eMatchExample :: Q Exp
