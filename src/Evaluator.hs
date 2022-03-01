@@ -994,10 +994,12 @@ reduce exp = match
                   (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc 2 intermediateFuncs
               in
               case (arg1, arg2) of
-                (Just arg1, Just arg2) ->
-                  if whnf arg1
-                     then replaceRelative Nothing targetFunctionPath arg2 -- TODO: Implement seq!
-                     else replaceRelative Nothing targetFunctionPath arg2
+                (Just arg1, Just arg2) -> do
+                  seqResult <- seqThroughReferences arg1
+                  case seqResult of
+                    ReduceLocation newTargetKey -> reduceAbsolute newTargetKey
+                    SeqError msg -> error msg
+                    DoNothing -> replaceAbsolute Nothing targetFunctionPath (deann arg2)
                 _ -> error "not fully applied!" -- TODO: Handle partial application
 
             _ -> hoistMT Nothing
@@ -1027,65 +1029,83 @@ type MatchMonad a = Either MatchFailure a
 type MatchResult = MatchMonad MatchSuccess
   -}
 
-type ReferenceMatchSuccess = [(Pat, Exp)]
+type ReferenceMatchSuccess = [(Pat, ExpWithDeepKey)]
 
 data ReferenceMatchFailure
-  = RMNeedsReduction (PatKey, ExpKey) -- Specific subexpression needs further reduction due to given subpattern before pattern can be determined to match or fail
-  | RMMismatch (PatKey, ExpKey) -- Pattern & expression both in WHNF and do not match - this pattern fails
-  | RMUnexpectedErrorMatch String (PatKey, ExpKey) -- For errors that shouldn't occur if the type-system is checking, e.g. tuple arity mismatch
-  | RMVariableHasPattern (ExpKey, Int)
-  | RMVariableHasGuards (ExpKey, Int)
-  | RMVariableNeedsReduction (ExpKey, Int) PatKey ExpKey
+  = RMNeedsReduction (PatKey, ExpDeepKey) -- Specific subexpression needs further reduction due to given subpattern before pattern can be determined to match or fail
+  | RMMismatch (PatKey, ExpDeepKey) -- Pattern & expression both in WHNF and do not match - this pattern fails
+  | RMUnexpectedErrorMatch String (PatKey, ExpDeepKey) -- For errors that shouldn't occur if the type-system is checking, e.g. tuple arity mismatch
+  | RMVariableHasPattern (ExpDeepKey, Int)
+  | RMVariableHasGuards (ExpDeepKey, Int)
+  | RMVariableNeedsReduction (ExpDeepKey, Int) PatKey ExpDeepKey
   | RMIndexingError String
   deriving (Show)
 
-  {-
-matchFailureToRefMatchFailure :: ExpDeepKey -> MatchFailure -> ReferenceMatchFailure
-matchFailureToRefMatchFailure superPath (NeedsReduction (patKey, expKey)) = RMNeedsReduction (patKey, expKey)
-matchFailureToRefMatchFailure superPath (Mismatch (patKey, expKey)) = RMMismatch (patKey, expKey)
-matchFailureToRefMatchFailure superPath (UnexpectedErrorMatch msg (patKey, expKey)) =
+matchFailureToRefMatchFailure :: MatchFailure -> ReferenceMatchFailure
+matchFailureToRefMatchFailure (NeedsReduction (patKey, expKey)) = RMNeedsReduction (patKey, expKey)
+matchFailureToRefMatchFailure (Mismatch (patKey, expKey)) = RMMismatch (patKey, expKey)
+matchFailureToRefMatchFailure (UnexpectedErrorMatch msg (patKey, expKey)) =
   RMUnexpectedErrorMatch msg (patKey, expKey)
 
-matchThroughReferences :: ExpDeepKey -> Pat -> Exp -> ExceptT ReferenceMatchFailure EvaluateM ReferenceMatchSuccess
-matchThroughReferences superPath pat exp = do
-  let matchResult = matchPatKeyed pat exp
-  let liftedMatchResult = toErrorM $ first (matchFailureToRefMatchFailure superPath) matchResult
-  liftedMatchResult `catchNR` \patKey expKey -> do
-    failedPat <- fromJustErr "matchThroughReferences: Failing pattern not found?" $ pat L.^? modPatByKeyA patKey
-    failedExp <- fromJustErr "matchThroughReferences: Failing expression not found?" $ exp L.^? modExpByKeyA expKey
-    undefined
-    {-
-    Left err@(NeedsReduction (patKey, expKey)) ->
-      -- Is failure due to an unexpanded variable?
-      let fromJustErr msg = maybe (error msg) id
-          failedPat = fromJustErr "matchThroughReferences: Failing pattern not found?" $ pat L.^? modPatByKeyA patKey
-          failedExp = fromJustErr "matchThroughReferences: Failing expression not found?" $ exp L.^? modExpByKeyA expKey
-      in
-      case failedExp of
-        VarE name -> do
-          lookupResponse <- lookupVariableAbsolute name superPath
-          -- Is unexpanded variable a value declaration?
-          case lookupResponse of
-            LookupVariableFound (ValueDeclaration (Just location) _ (GuardedB body) _) ->
-              throwError $ RMVariableHasGuards location
-            LookupVariableFound (ValueDeclaration (Just location) letPat (NormalB body) _) ->
-              -- Is variable fully reduced (no patterns on left side, no guards?)
-              case letPat of
-                VarP _ -> do
-                  subReferenceMatch <- matchThroughReferences location failedPat body
-                  case subReferenceMatch of
-                    _ -> undefined -- RMMatchFailure (NeedsReduction (subPatKey, subExpKey)) -> undefined
-                    _ -> pure subReferenceMatch
-                _ -> throwError $ RMVariableHasPattern location
-            _ -> throwError err
-        _ -> throwError err
-    Left err -> throwError err
-    -}
+matchThroughReferences :: Pat -> ExpWithDeepKey -> EvaluateM (Either ReferenceMatchFailure ReferenceMatchSuccess)
+matchThroughReferences pat expWithDeepKey = runExceptT $ go pat expWithDeepKey
   where
-    fromJustErr msg = maybe (throwError $ RMIndexingError msg) pure
-    toErrorM = either throwError pure
-    catchNR action handler =
-      catchError action $ \case
-        RMNeedsReduction (patKey, expKey) -> handler patKey expKey
-        err -> throwError err
-        -}
+  go pat expWithDeepKey = do
+    let matchResult :: MatchResult
+        matchResult = matchPatKeyed (annKeys pat) expWithDeepKey
+        liftedMatchResult = toErrorM $ first matchFailureToRefMatchFailure matchResult
+    -- if any mismatch occurs, handle it as follows
+    liftedMatchResult `catchNR` \origErr patKey expKey -> do
+      failedPat <- fromJustErr (RMIndexingError "matchThroughReferences: Failing pattern not found?")
+                    $ pat L.^? modPatByKeyA patKey
+      failedExp <- fromJustErr (RMIndexingError "matchThroughReferences: Failing expression not found?")
+                    $ expWithDeepKey L.^? modAnnExpByDeepKeyA expKey
+      (failedName, failedFullPath) <-
+        case failedExp of
+          -- if the place of mismatch is a variable, we know that can be expanded into a value
+          Fix (Pair (Const nodePath) (VarEF name)) -> pure (name, nodePath)
+          _ -> throwError origErr
+      -- lookup the variable's definition
+      lookupResult <- MT.lift $ lookupVariableAbsolute failedName failedFullPath
+      case lookupResult of
+        LookupVariableFound (ValueDeclaration (Just location) _ (GuardedB body) _) ->
+          throwError $ RMVariableHasGuards location
+        LookupVariableFound (ValueDeclaration (Just location) (VarP _) (NormalB body) _) ->
+          -- ^ if the looked-up definition is a normal variable with a normal body, we can try a match over that
+          let trueLocation = mkLetIndex location
+              newExp = expWithDeepKey & modAnnExpByDeepKeyA trueLocation L.%~ \(Fix (Pair (Const location) _)) -> annDeepKeys location body
+          in
+          go pat newExp
+        LookupVariableFound (ValueDeclaration (Just location) _ (NormalB body) _) ->
+          throwError $ RMVariableHasPattern location
+        LookupVariableNotFound _ _ -> throwError $ RMUnexpectedErrorMatch "matchThroughReferences: Mismatched variable has no definition" (patKey, expKey)
+        LookupVariableNodeMissing -> throwError $ RMUnexpectedErrorMatch "matchThroughReferences: Variable node is missing" (patKey, expKey)
+    where
+      fromJustErr err = maybe (throwError err) pure
+      toErrorM = either throwError pure
+      catchNR action handler =
+        catchError action $ \case
+          origErr@(RMNeedsReduction (patKey, expKey)) -> handler origErr patKey expKey
+          err -> throwError err
+
+data SeqResult
+  = ReduceLocation ExpDeepKey
+  | DoNothing
+  | SeqError String
+  deriving (Show)
+
+seqThroughReferences :: ExpWithDeepKey -> EvaluateM SeqResult
+seqThroughReferences expWithDeepKey =
+  case expWithDeepKey of
+    Fix (Pair (Const nodePath) (VarEF name)) -> do
+      lookupResult <- lookupVariableAbsolute name nodePath
+      case lookupResult of
+        LookupVariableFound (ValueDeclaration (Just location) _ (NormalB body) _) ->
+          seqThroughReferences (annDeepKeys (mkLetIndex location) body)
+        LookupVariableFound _ ->
+          pure $ ReduceLocation nodePath
+        LookupVariableNotFound _ _ -> pure $ SeqError "seqThroughReferences: Mismatched variable has no definition"
+        LookupVariableNodeMissing -> pure $ SeqError "seqThroughReferences: Variable node is missing"
+    Fix (Pair (Const nodePath) _)
+      | whnf (deann expWithDeepKey) -> pure DoNothing
+      | otherwise -> pure $ ReduceLocation nodePath

@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ApplicativeDo #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveLift #-}
@@ -76,6 +77,9 @@ type ExpDeepKey = [Either ExpAltKey (Key ExpF)]
 
 appendAlt :: ExpDeepKey -> ExpAltKey -> ExpDeepKey
 appendAlt deep addendum = deep ++ [Left addendum]
+
+mkLetIndex :: (ExpDeepKey, Int) -> ExpDeepKey
+mkLetIndex (expKey, ix) = appendAlt expKey (EALet ix)
 
 appendShallow :: ExpDeepKey -> ExpKey -> ExpDeepKey
 appendShallow deep addendum = deep ++ map Right addendum
@@ -211,10 +215,16 @@ type With t a = Fix (WithF t a)
 type WithF t a = Ann a (R.Base t)
 type RecKey t = With t [Key (R.Base t)]
 
+pattern With t a = Fix (WithF t a)
+pattern WithF t a = Pair (Const a) t
+
 annKeys :: (R.Recursive t, Keyed (R.Base t)) => t -> RecKey t
 annKeys exp = R.ana go ([], exp)
   where
     go (prekeys, exp) = Pair (Const prekeys) (first (\x -> prekeys ++ [x]) <$> projectK exp)
+
+annOne :: a -> f (Fix (Ann a f)) -> Fix (Ann a f)
+annOne a f = Fix (Pair (Const a) f)
 
 type ExpWithDeepKey = With Exp ExpDeepKey
 
