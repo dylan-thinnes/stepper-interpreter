@@ -495,21 +495,21 @@ envFromDecs decs = addNewEnvs defaultEnvironment (map (defines Nothing) decs)
 -- Find expression and in-scope environment at a path in an AST
 envExpAt :: Environment -> Exp -> ExpDeepKey -> Maybe (Environment, Exp)
 envExpAt topEnv topExp startingKey =
-  case go topEnv topExp startingKey of
+  case go topEnv topExp [] startingKey of
     Left (env, exp) -> Just (env, exp)
     Right _ -> Nothing
   where
-    go :: Environment -> Exp -> ExpDeepKey -> Either (Environment, Exp) Exp
-    go env exp key =
+    go :: Environment -> Exp -> ExpDeepKey -> ExpDeepKey -> Either (Environment, Exp) Exp
+    go env exp soFar key =
       let newEnv :: Environment
           newEnv =
             case exp of
-              LetE decs body -> addNewEnvs env $ zipWith (\i -> defines (Just (key, i))) [0..] decs
+              LetE decs body -> addNewEnvs env $ zipWith (\i -> defines (Just (soFar, i))) [0..] decs
               _ -> env
       in
       case key of
         [] -> Left (newEnv, exp)
-        (head:rest) -> modExpByDeepKeyA [head] (\exp -> go newEnv exp rest) exp
+        (head:rest) -> modExpByDeepKeyA [head] (\exp -> go newEnv exp (soFar ++ [head]) rest) exp
 
 type EvaluateM = ReaderT EvaluationInfo (Except String)
 
