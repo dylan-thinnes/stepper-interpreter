@@ -4,6 +4,7 @@
 module Demos.Evaluator where
 
 import "base" Data.Functor.Identity
+import "base" Data.List
 
 import "process" System.Process
 
@@ -158,8 +159,15 @@ matchesIgnore :: ReductionResult -> Bool
 matchesIgnore (NewlyReduced (Just reason) _) = any (reason ==) ignoreList
   where
   ignoreList :: [String]
-  ignoreList = ["Simplify simple decl"]
+  ignoreList = []
 matchesIgnore _ = False
+
+matchesGrouping :: [Either String ReductionResult] -> [Either String ReductionResult]
+matchesGrouping = map last . groupBy f
+  where
+  f :: Either String ReductionResult -> Either String ReductionResult -> Bool
+  f (Right (NewlyReduced (Just msg1) _)) (Right (NewlyReduced (Just msg2) _)) = msg1 == msg2
+  f _ _ = False
 
 run :: Environment -> Exp -> IO (Either String ReductionResult)
 run env exp = do
@@ -177,7 +185,8 @@ run env exp = do
   where
   reductionSteps :: [Either String ReductionResult]
   reductionSteps
-    = filter (either (const True) (not . matchesIgnore))
+    = matchesGrouping
+    $ filter (either (const True) (not . matchesIgnore))
     $ takeWhile (either (const True) (not . isCannotReduce))
       steps
 
