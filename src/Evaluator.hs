@@ -844,7 +844,7 @@ reduce exp = match
 
     -- handle function application
     matchFunctionApplication = do
-      FlattenedApps { func, args, intermediateFuncs } <- pure $ flattenAppsKeyed (annDeepKeys [] $ deann @Exp exp)
+      FlattenedApps { func, args, intermediateFuncs } <- pure $ flattenAppsKeyed exp
       if
         | Just name <- getVarExp $ deann func
         -> do
@@ -859,7 +859,7 @@ reduce exp = match
               | Fix (Pair (Const funcIdx) _) <- func
               , NormalB bodyExp <- body -- TODO: handle guards
               , VarP name <- pat -- TODO: when pat is not a variable, should somehow dispatch forcing of the lazy pattern declaration until it explodes into subexpressions
-              -> MT.lift $ replaceRelative Nothing funcIdx $ letWrap wheres bodyExp
+              -> MT.lift $ replaceAbsolute Nothing funcIdx $ letWrap wheres bodyExp
             LookupVariableFound (DataField pat name) -> MT.lift $
               let cardinality :: Int
                   cardinality = 1
@@ -901,7 +901,7 @@ reduce exp = match
                       Left (argIdx, NeedsReduction (_, argSubPath)) -> do
                         --emitLog $ show argIdx ++ "th argument needs further reduction"
                         let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
-                        reduceRelative (path ++ argSubPath) -- TODO: Do we need to handle CannotReduce?
+                        reduceAbsolute (path ++ argSubPath) -- TODO: Do we need to handle CannotReduce?
                       Left (argIdx, Mismatch _) -> do
                         --emitLog $ show argIdx ++ "th clause did not match"
                         rest
@@ -965,7 +965,7 @@ reduce exp = match
                       Left (argIdx, NeedsReduction (_, argSubPath)) -> do
                         --emitLog $ show argIdx ++ "th argument needs further reduction"
                         let (Fix (Pair (Const path) _)) = map fromJust args !! argIdx
-                        reduceRelative (path ++ argSubPath) -- TODO: Do we need to handle CannotReduce?
+                        reduceAbsolute (path ++ argSubPath) -- TODO: Do we need to handle CannotReduce?
                       Left (argIdx, Mismatch _) -> do
                         --emitLog $ show argIdx ++ "th clause did not match"
                         tryRest
@@ -987,8 +987,8 @@ reduce exp = match
                 else foldr runHandler inexhaustivePatternMatch (zip [0..] handlers)
 
             LookupVariableFound Seq -> MT.lift $
-              let arg1, arg2 :: Maybe Exp
-                  (arg1:arg2:_) = map (fmap deann) args
+              let arg1, arg2 :: Maybe ExpWithDeepKey
+                  (arg1:arg2:_) = args
 
                   targetFunctionPath :: ExpDeepKey
                   (_, _, Fix (Pair (Const targetFunctionPath) _)) = getIntermediateFunc 2 intermediateFuncs
@@ -1005,7 +1005,7 @@ reduce exp = match
         -> MT.lift
         $ let tryArg (i, Nothing) rest = rest
               tryArg (i, Just (Fix (Pair (Const path) _))) rest = do
-                reduction <- reduceRelative path
+                reduction <- reduceAbsolute path
                 case reduction of
                   CannotReduce _ -> rest
                   NewlyReduced _ exp -> pure reduction
