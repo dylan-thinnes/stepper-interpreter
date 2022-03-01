@@ -99,9 +99,11 @@ data MatchFailure
   | UnexpectedErrorMatch String (PatKey, ExpDeepKey) -- For errors that shouldn't occur if the type-system is checking, e.g. tuple arity mismatch
   deriving (Show, Lift)
 
-type MatchSuccess = [(Pat, Exp)]
+type MatchSuccess = [(Pat, ExpWithDeepKey)]
+type MatchSuccess' = [(Pat, Exp)]
 type MatchMonad a = Either MatchFailure a
 type MatchResult = MatchMonad MatchSuccess
+type MatchResult' = MatchMonad MatchSuccess'
 
 matchPat :: Pat -> Exp -> MatchResult
 matchPat = matchPatConfigurable False
@@ -154,14 +156,14 @@ matchPatKeyedConfigurable goThroughLet = go
           (IsLiteral [], IsCons _ _) -> mismatch
 
           -- Try matches by other means
-          _ -> match patFAnn expFAnn
+          _ -> match expKey patFAnn expFAnn
 
-      match :: PatF (RecKey Pat) -> ExpF ExpWithDeepKey -> MatchResult
-      match (LitPF pat) (LitEF exp)
+      match :: ExpDeepKey -> PatF (RecKey Pat) -> ExpF ExpWithDeepKey -> MatchResult
+      match _ (LitPF pat) (LitEF exp)
         | pat == exp = Right []
         | otherwise = mismatch
-      match (VarPF name) exp = Right [(VarP name, deannWrapped exp)]
-      match (TupPF pats) (TupEF mexps)
+      match deepKey (VarPF name) exp = Right [(VarP name, annOne deepKey exp)]
+      match _ (TupPF pats) (TupEF mexps)
         | length pats /= length mexps = unexpectedError "Tuple pattern-expression arity mismatch."
         | otherwise = do
             -- If there are any Nothing expressions, the tuple expression is partially applied and we short circuit with an error
@@ -170,9 +172,9 @@ matchPatKeyedConfigurable goThroughLet = go
                 onlyJust (Just a) = pure a
             exps <- traverse onlyJust mexps
             zipConcatM go pats exps
-      match (UnboxedTupPF _) _ = error "matchPatKeyed: Unsupported UnboxedTupP pattern in AST"
-      match (UnboxedSumPF _ _ _) _ = error "matchPatKeyed: Unsupported UnboxedSumP pattern in AST"
-      match (ConPF patConName pats) _
+      match _ (UnboxedTupPF _) _ = error "matchPatKeyed: Unsupported UnboxedTupP pattern in AST"
+      match _ (UnboxedSumPF _ _ _) _ = error "matchPatKeyed: Unsupported UnboxedSumP pattern in AST"
+      match _ (ConPF patConName pats) _
         | FlattenedApps { func, args = margs } <- flattenAppsKeyed annExp
         , let args = catMaybes margs
         , (ConE expConName) <- deann func
@@ -185,7 +187,7 @@ matchPatKeyedConfigurable goThroughLet = go
               LT -> unexpectedError "Data constructor in expression is applied to too many arguments."
               GT -> unexpectedError "Data constructor in expression isn't fully applied."
               EQ -> zipConcatM go pats args
-      match (InfixPF patL patConName patR) _
+      match _ (InfixPF patL patConName patR) _
         | let pats = [patL, patR]
         , FlattenedApps { func, args = margs } <- flattenAppsKeyed annExp
         , let args = catMaybes margs
@@ -199,27 +201,27 @@ matchPatKeyedConfigurable goThroughLet = go
               LT -> unexpectedError "Data constructor in expression is applied to too many arguments."
               GT -> unexpectedError "Data constructor in expression isn't fully applied."
               EQ -> zipConcatM go pats args
-      match (UInfixPF patL _ patR) _ = error "matchPatKeyed: Unsupported pat UInfixP"
-      match (ParensPF pat) exp = go pat annExp
-      match pat (ParensEF exp) = go annPat exp
-      match (TildePF pat) exp = Right [(deann pat, deannWrapped exp)] -- lazy patterns always match, deferred to a "let-desugaring"
-      match (BangPF pat) exp = error "matchPatKeyed: Unsupported pat BangP"
-      match (AsPF name pat) exp = do
+      match _ (UInfixPF patL _ patR) _ = error "matchPatKeyed: Unsupported pat UInfixP"
+      match _ (ParensPF pat) exp = go pat annExp
+      match _ pat (ParensEF exp) = go annPat exp
+      match deepKey (TildePF pat) exp = Right [(deann pat, annOne deepKey exp)] -- lazy patterns always match, deferred to a "let-desugaring"
+      match _ (BangPF pat) exp = error "matchPatKeyed: Unsupported pat BangP"
+      match deepKey (AsPF name pat) exp = do
         submatches <- go pat annExp
-        pure $ (VarP name, deannWrapped exp) : submatches
-      match WildPF _ = Right []
-      match (RecPF _ fieldPats) _ = error "matchPatKeyed: Unsupported pat RecP" -- TODO: Urgently need to support field patterns
-      match (ListPF pats) (ListEF exps) -- TODO: handle conses <=> list literals
+        pure $ (VarP name, annOne deepKey exp) : submatches
+      match _ WildPF _ = Right []
+      match _ (RecPF _ fieldPats) _ = error "matchPatKeyed: Unsupported pat RecP" -- TODO: Urgently need to support field patterns
+      match _ (ListPF pats) (ListEF exps) -- TODO: handle conses <=> list literals
         | length pats /= length exps = unexpectedError "List pattern and list expression have different lengths."
         | otherwise = zipConcatM go pats exps
-      match (SigPF pat type_) _ = error "matchPatKeyed: Unsupported pat SigP"
-      match (ViewPF exp pat) _ = error "matchPatKeyed: Unsupported pat ViewP"
+      match _ (SigPF pat type_) _ = error "matchPatKeyed: Unsupported pat SigP"
+      match _ (ViewPF exp pat) _ = error "matchPatKeyed: Unsupported pat ViewP"
 
       -- TODO: How does matching through lets & other scope-affecting nodes work? Must consider.
       -- Ans: It messes with matching CONSIDERABLY, added flag to enable it in demos
-      match pat (LetEF _ exp) | goThroughLet = go annPat exp
+      match _ pat (LetEF _ exp) | goThroughLet = go annPat exp
 
-      match pat exp
+      match _ pat exp
         -- TODO: Definitely unfinished cases here somewhere...
         | FlattenedApps { func } <- flattenAppsKeyed annExp
         , (ConE _) <- deann func
@@ -228,6 +230,9 @@ matchPatKeyedConfigurable goThroughLet = go
         = needsReduction
         | otherwise
         = needsReduction -- TODO: Consider how caller checks for forcing of an `error "msg"`
+
+patDeepExpPairToValDecl :: (Pat, ExpWithDeepKey) -> Maybe Dec
+patDeepExpPairToValDecl (pat, exp) = patExpPairToValDecl (pat, deann exp)
 
 patExpPairToValDecl :: (Pat, Exp) -> Maybe Dec
 patExpPairToValDecl (VarP patName, VarE expName) | patName == expName = Nothing
@@ -768,7 +773,8 @@ reduce exp = match
                 matchingPats = map extractMatchingPat decls
           , any isRight matchingPats
           -> let explodedMatchingPats :: [Dec]
-                 explodedMatchingPats = concat $ either (:[]) (mapMaybe patExpPairToValDecl) <$> matchingPats
+                 explodedMatchingPats =
+                   concat $ either (:[]) (mapMaybe patDeepExpPairToValDecl) <$> matchingPats
              in
              replaceSelf Nothing $ letWrap explodedMatchingPats (deann body)
           | LetEF decls (bodyIdx, body) <- keyed expf
@@ -824,7 +830,7 @@ reduce exp = match
               in
               case matchPat pat (deann target) of
                 Right boundVars ->
-                  replaceSelf Nothing $ explodeIntoLet boundVars
+                  replaceSelf Nothing $ explodeIntoLet (map (fmap deann) boundVars)
                 Left (Mismatch (patKey, expKey)) ->
                   tryNext
                 Left (NeedsReduction (patKey, expKey)) ->
@@ -909,8 +915,8 @@ reduce exp = match
                         uniqueExpression <- transformBiM toUnique expression
                         uniqueWheres <- traverse (transformBiM toUnique) wheres
 
-                        let result = letWrap (mapMaybe patExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
-                        replaceRelative Nothing targetFunctionPath result
+                        let result = letWrap (mapMaybe patDeepExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
+                        replaceAbsolute Nothing targetFunctionPath result
               in
               if any isNothing headArgs
                 then error "not fully applied!" -- TODO: Handle partial application
@@ -973,8 +979,8 @@ reduce exp = match
                         uniqueExpression <- transformBiM toUnique expression
                         uniqueWheres <- traverse (transformBiM toUnique) wheres
 
-                        let result = letWrap (mapMaybe patExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
-                        replaceRelative Nothing targetFunctionPath result
+                        let result = letWrap (mapMaybe patDeepExpPairToValDecl uniqueBindings ++ uniqueWheres) uniqueExpression
+                        replaceAbsolute Nothing targetFunctionPath result
               in
               if any isNothing headArgs
                 then error "not fully applied!" -- TODO: Handle partial application
