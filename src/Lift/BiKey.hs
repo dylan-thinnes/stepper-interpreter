@@ -32,8 +32,6 @@ import "uniplate" Data.Generics.Uniplate.Data
 
 import Lift.DataDeps hiding (thd)
 
-import Debug.Trace
-
 thd :: (a, b, c) -> c
 thd (a, b, c) = c
 

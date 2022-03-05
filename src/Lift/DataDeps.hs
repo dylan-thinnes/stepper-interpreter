@@ -21,8 +21,6 @@ import "uniplate" Data.Generics.Uniplate.Data qualified as B
 
 import Lift.Lift
 
-import Debug.Trace
-
 -- utils
 snd3 :: (a, b, c) -> b
 snd3 (_, b, _) = b
@@ -125,3 +123,12 @@ concreteTypes type_ = do
     InfixT _ name _ -> pure name
     UInfixT _ name _ -> pure name
     _ -> []
+
+debugDepGraph :: FilePath -> DepGraph -> IO ()
+debugDepGraph path graph =
+  let stripName name = reverse $ takeWhile (/= '.') $ reverse $ show name
+      showEdge (from, to) = stripName from ++ " -> " ++ stripName to ++ ";"
+      indent str = "  " ++ str
+      src = unlines $ ["digraph {"] ++ map (indent . showEdge) (edges graph) ++ ["}"]
+  in
+  writeFile path src
