@@ -55,4 +55,5 @@ deriving instance Lift Type
 deriving instance Lift Lit
 deriving instance Lift Name
 deriving instance Lift Exp
+deriving instance Lift Info
 
