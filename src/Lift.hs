@@ -47,7 +47,7 @@ import "recursion-schemes" Data.Functor.Foldable qualified as R
 import "recursion-schemes" Data.Functor.Foldable.TH qualified as R
 
 import Lift.Lift
-import Lift.BiKey
+--import Lift.BiKey
 
 R.makeBaseFunctor ''Exp
 R.makeBaseFunctor ''Pat
