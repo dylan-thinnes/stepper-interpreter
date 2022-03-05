@@ -27,6 +27,7 @@ library
         Lift,
         Lift.BiKey,
         Lift.DataDeps,
+        Lift.Mutplate,
         Lift.Lift,
         Ppr,
         Ppr.Lib,
