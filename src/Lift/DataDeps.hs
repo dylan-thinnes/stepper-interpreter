@@ -14,19 +14,15 @@ import "containers" Data.Graph qualified as G
 import "containers" Data.Map qualified as M
 import "containers" Data.Set qualified as S
 
+import "lens" Control.Lens qualified as L
+
 import "template-haskell" Language.Haskell.TH
 import "template-haskell" Language.Haskell.TH.Syntax
 
 import "uniplate" Data.Generics.Uniplate.Data qualified as B
 
 import Lift.Lift
-
--- utils
-snd3 :: (a, b, c) -> b
-snd3 (_, b, _) = b
-
-thd :: (a, b, c) -> c
-thd (_, _, c) = c
+import Utils
 
 -- dependency graphs and their ops
 type DepGraph = M.Map Name (S.Set Name)
@@ -114,6 +110,22 @@ typesFromCon (InfixC bangType1 _ bangType2) = map snd [bangType1, bangType2]
 typesFromCon (ForallC _ _ con) = typesFromCon con
 typesFromCon (GadtC _ bangTypes _) = map snd bangTypes
 typesFromCon (RecGadtC _ varBangTypes _) = map thd varBangTypes
+
+overConTypes :: L.Traversal Con Con Type Type
+overConTypes f (NormalC name bangTypes) = NormalC name <$> (L.traverse . L._2) f bangTypes
+overConTypes f (RecC name varBangTypes) = RecC name <$> (L.traverse . L._3) f varBangTypes
+overConTypes f (InfixC bangType1 name bangType2) = InfixC <$> L._2 f bangType1 <$$> name <*> L._2 f bangType2
+overConTypes f (ForallC tyvars cxt con) = ForallC tyvars cxt <$> overConTypes f con
+overConTypes f (GadtC names bangTypes finalType) = GadtC names <$> (L.traverse . L._2) f bangTypes <$$> finalType
+overConTypes f (RecGadtC names varBangTypes finalType) = RecGadtC names <$> (L.traverse . L._3) f varBangTypes <$$> finalType
+
+overConNames :: L.Traversal Con Con Name Name
+overConNames f (NormalC name bangTypes) = NormalC <$> f name <$$> bangTypes
+overConNames f (RecC name varBangTypes) = RecC <$> f name <$$> varBangTypes
+overConNames f (InfixC bangType1 name bangType2) = InfixC bangType1 <$> f name <$$> bangType2
+overConNames f (ForallC tyvars cxt con) = ForallC tyvars cxt <$> overConNames f con
+overConNames f (GadtC names bangTypes finalType) = GadtC <$> L.traverse f names <$$> bangTypes <$$> finalType
+overConNames f (RecGadtC names varBangTypes finalType) = RecGadtC <$> L.traverse f names <$$> varBangTypes <$$> finalType
 
 concreteTypes :: Type -> [Name]
 concreteTypes type_ = do
