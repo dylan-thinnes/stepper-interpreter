@@ -29,6 +29,8 @@ library
         Lift.DataDeps,
         Lift.Mutplate,
         Lift.Lift,
+        Lift.DeepHoled,
+        Utils,
         Ppr,
         Ppr.Lib,
         Ppr.THLibMapCopy,
