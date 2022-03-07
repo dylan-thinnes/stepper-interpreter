@@ -48,6 +48,7 @@ import "recursion-schemes" Data.Functor.Foldable.TH qualified as R
 
 import Lift.Lift
 --import Lift.BiKey
+import Lift.DeepHoled
 
 R.makeBaseFunctor ''Exp
 R.makeBaseFunctor ''Pat
@@ -277,6 +278,8 @@ data Mk3 a b c = Mk3 a b c
 
 data V a = V0 (a, a)
   deriving (Show, Functor)
+
+baseFunctorFamily ''Exp
 
 --data X b a = X (Int, [a], (b, a))
 --  deriving (Functor, Generic1)
