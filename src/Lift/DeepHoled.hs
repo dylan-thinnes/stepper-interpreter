@@ -23,7 +23,7 @@ import "base" Data.Char
 import "base" Data.Data qualified as DD
 import "base" Data.Foldable (toList)
 import "base" Data.List
-import "base" Data.Maybe (fromMaybe)
+import "base" Data.Maybe (fromMaybe, fromJust)
 import "base" GHC.Generics (Generic1(..))
 
 import "keys" Data.Key (Key(..), Keyed(..), keyed, Adjustable(..))
@@ -93,8 +93,9 @@ tryReplaceSynonym type_ =
       case definition ^? _TyConI . _TySynD of
         (Just synonym) | length args == length (synonym ^. _2) ->
           let (newBody, leftoverArgs) = applySynonym synonym args
+              newType = unflattenAppTs newBody leftoverArgs
           in
-          replaceAnySynonyms (unflattenAppTs newBody leftoverArgs)
+          replaceAnySynonyms newType
         _ -> pure type_
     _ -> pure type_
 
@@ -109,26 +110,50 @@ datatypeArity name = do
     TyConI (NewtypeD _ _ tyvars _ _ _) -> Just $ length tyvars
     TyConI (TySynD _ tyvars _) -> Just $ length tyvars
 
-type IdentifierMT m = S.StateT Int m
+type IdentifierMT k m = S.StateT ([(k, Int)], Int) m
 
-newIdentifier :: Monad m => IdentifierMT m Int
-newIdentifier = do
-  identifier <- S.get
-  S.modify succ
-  pure identifier
+newIdentifierBy :: (Monad m, Eq k) => k -> IdentifierMT k m (Int, Bool)
+newIdentifierBy key = do
+  (existing, identifier) <- S.get
+  case lookup key existing of
+    Just existingIdentifier -> pure (existingIdentifier, False)
+    Nothing -> do
+      S.put ((key, identifier) : existing, succ identifier)
+      pure (identifier, True)
 
-runIdentifierMT :: Monad m => IdentifierMT m a -> m a
-runIdentifierMT ma = S.evalStateT ma 0
+newIdentifier :: (Monad m) => IdentifierMT k m Int
+newIdentifier = _2 <<%= succ
+
+runIdentifierMT :: Monad m => IdentifierMT k m a -> m a
+runIdentifierMT ma = S.evalStateT ma ([], 0)
+
+runIdentifierM :: IdentifierMT k Identity a -> a
+runIdentifierM = runIdentity . runIdentifierMT
+
+class Recursive datatype where
+  type RecursiveF datatype :: * -> *
+  project :: datatype -> RecursiveF datatype Exp
+  embed :: RecursiveF datatype Exp -> datatype
+
+replaceTyVar :: Name -> Name -> Type -> Type
+replaceTyVar target replacement = transformBi $ \type_ ->
+  case type_ of
+    VarT varName | varName == target -> VarT replacement
+    _ -> type_
 
 baseFunctorFamily :: Name -> Q [Dec]
 baseFunctorFamily target = runIdentifierMT $ do
   let derivedClasses = [''Functor, ''Foldable, ''Traversable, ''Generic1]
+  let derivedClasses1 = [''Show, ''Eq]
 
   let suffixName name = mkName $ rawName name ++ "F" ++ rawName target
-  graph <- S.lift $ dgToList . maybe undefined id . connectedTo target <$> depGraphs [target]
+  let unsuffixName name = mkName $ reverse $ drop (length ("F" ++ rawName target)) $ reverse $ rawName name
+  mGraph <- S.lift $ connectedTo target <$> depGraphs [target]
+  let graph = map (\(name, deps) -> (rawName name, deps)) $ dgToList $ fromJust mGraph
 
-  let isNode name = name `elem` map fst graph
-  let replaceOtherGraphNodes :: Name -> Type -> IdentifierMT Q Type
+  let isNode name = rawName name `elem` map fst graph
+
+  let replaceOtherGraphNodes :: Name -> Type -> IdentifierMT [Type] Q Type
       replaceOtherGraphNodes newTyVar = S.lift . transformBiM go
         where
         go type_ =
@@ -146,40 +171,40 @@ baseFunctorFamily target = runIdentifierMT $ do
                     Nothing -> pure type_
             _ -> pure type_
 
-  let replaceBadTuples :: Name -> Type -> W.WriterT [Dec] (IdentifierMT Q) Type
+  let replaceBadTuples :: Name -> Type -> W.WriterT [([Type], Dec)] (IdentifierMT [Type] Q) Type
       replaceBadTuples newTyVar = transformBiM go
         where
           mkSpecialTuple :: Name -> Name -> Name -> [Type] -> Dec
           mkSpecialTuple dataName conName varName types =
             let bang = Bang NoSourceUnpackedness NoSourceStrictness
                 con = NormalC conName $ map (bang,) types
-                deriveClause = DerivClause Nothing $ map ConT derivedClasses
             in
-            DataD [] dataName [PlainTV varName] Nothing [con] [deriveClause]
+            DataD [] dataName [PlainTV varName] Nothing [con] []
 
-          lift :: Monoid w => Q a -> W.WriterT w (IdentifierMT Q) a
+          lift :: Monoid w => Q a -> W.WriterT w (IdentifierMT [Type] Q) a
           lift = W.lift . S.lift
 
-          go :: Type -> W.WriterT [Dec] (IdentifierMT Q) Type
+          go :: Type -> W.WriterT [([Type], Dec)] (IdentifierMT [Type] Q) Type
           go type_ =
             case flattenAppTs type_ of
-              (TupleT n, args)
-                | length args == n
-                , or [newTyVar == varName | VarT varName <- universeBi type_] -> do
-                  identifier <- W.lift newIdentifier
-                  specialTupleDataName <- lift $ newName $ "SpecialTuple" ++ show n ++ "_" ++ show identifier
-                  specialTupleConName <- lift $ newName $ "ST" ++ show n ++ "_" ++ show identifier
-                  specialTupleTyVar <- lift $ newName "a"
-                  let tupleArgs = flip transformBi args $ \type_ ->
-                        case type_ of
-                          VarT varName | varName == newTyVar -> VarT specialTupleTyVar
-                          _ -> type_
-                  W.tell [mkSpecialTuple specialTupleDataName specialTupleConName specialTupleTyVar tupleArgs]
-                  pure $ AppT (ConT specialTupleDataName) (VarT newTyVar)
+              (TupleT n, args) | length args == n -> do
+                replacedArgs <- traverse (S.lift . replaceOtherGraphNodes newTyVar) args
+                let anyArgsRecursive = or [newTyVar == varName | VarT varName <- universeBi replacedArgs]
+                if anyArgsRecursive
+                  then do
+                    (identifier, isNovel) <- W.lift $ newIdentifierBy $ replaceTyVar newTyVar (mkName "xxx") <$> args
+                    let specialTupleDataName = mkName $ "SpecialTuple" ++ show n ++ "_" ++ show identifier
+                    let specialTupleConName = mkName $ "ST" ++ show n ++ "_" ++ show identifier
+                    let specialTupleTyVar = mkName "a"
+                    let tupleArgs = replaceTyVar newTyVar specialTupleTyVar <$> replacedArgs
+                    let specialTuple = mkSpecialTuple specialTupleDataName specialTupleConName specialTupleTyVar tupleArgs
+                    if isNovel then W.tell [(args, specialTuple)] else pure ()
+                    pure $ AppT (ConT specialTupleDataName) (VarT newTyVar)
+                  else pure type_
               _ -> pure type_
 
-  newDecs <- forM (graph `zip` [0..]) $ \((name, dependencies), ii) -> do
-    info <- S.lift $ reify name
+  newDecss <- forM (graph `zip` [0..]) $ \((name, dependencies), ii) -> do
+    info <- S.lift $ reify $ mkName name
     case info of
       TyConI (NewtypeD cxt name tyvars kind constructor derivations) -> do
         -- New name
@@ -195,16 +220,25 @@ baseFunctorFamily target = runIdentifierMT $ do
             overConNames %~ suffixName &
             overConTypes %%~ replaceOtherGraphNodes newTyVar
 
-        pure [NewtypeD cxt name' tyvars' kind constructor' derivations]
-      TyConI (TySynD name tyvars subtype) -> do
+        pure [Left $ NewtypeD cxt name' tyvars' kind constructor' derivations]
+      TyConI (TySynD name tyvars subtype) ->
         let name' = suffixName name
+        in
+        case flattenAppTs subtype of
+          (TupleT _, origTupleTypes) -> do
+            newTyVar <- S.lift $ newName "a"
+            let tyvars' = tyvars ++ [PlainTV newTyVar]
 
-        newTyVar <- S.lift $ newName "a"
-        let tyvars' = tyvars ++ [PlainTV newTyVar]
+            subtype' <- replaceOtherGraphNodes newTyVar subtype
 
-        subtype' <- replaceOtherGraphNodes newTyVar subtype
+            let (TupleT n, args) = flattenAppTs subtype'
+                bang = Bang NoSourceUnpackedness NoSourceStrictness
+                constructor = NormalC name' $ map (bang,) args
+                dataDec = DataD [] name' tyvars' Nothing [constructor] []
 
-        pure [TySynD name' tyvars' subtype']
+            pure [Right (origTupleTypes, dataDec)]
+          -- _ -> pure [Left $ TySynD name' tyvars' subtype']
+          _ -> error "baseFunctorFamily: Does not support non-tuple type synonyms"
       TyConI (DataD cxt name tyvars mkind constructors deriveClauses) -> do
         -- New name
         let name' = suffixName name
@@ -214,33 +248,160 @@ baseFunctorFamily target = runIdentifierMT $ do
         let tyvars' = tyvars ++ [PlainTV newTyVar]
 
         -- New constructors
-        constructors' <-
-          constructors &
+        (constructors', specialTuples) <-
+          W.runWriterT $
+            constructors &
+              traverse . overConTypes %%~ replaceBadTuples newTyVar
+        constructors'' <-
+          constructors' &
             traverse . overConNames %~ suffixName &
             traverse . overConTypes %%~ replaceOtherGraphNodes newTyVar
-        (constructors'', specialTuples) <-
-          W.runWriterT $
-            constructors' &
-              traverse . overConTypes %%~ replaceBadTuples newTyVar
+        let specialTuples' = map Right specialTuples
 
-        pure $ [DataD cxt name' tyvars' mkind constructors'' deriveClauses] ++ specialTuples
+        pure $ Left (DataD cxt name' tyvars' mkind constructors'' deriveClauses) : specialTuples'
       _ -> pure []
 
-  deriveFunctors <- S.lift $ forM graph $ \(name, _) -> do
-    info <- reify name
-    if has (_TyConI . _TySynD) info
-       then pure []
-       else
-         forM derivedClasses $ \class_ ->
-           [d| deriving instance $(conT class_) $(conT $ suffixName name) |]
+  let newDecsWithSpecial = concat newDecss
+      newDecs = map (either id snd) newDecsWithSpecial
 
-  deriveKeys <- S.lift $ forM graph $ \(name, _) -> do
-    info <- reify name
-    if has (_TyConI . _TySynD) info
-       then pure []
-       else
-         let name' = conT $ suffixName name
-         in
-         [d| type instance Key $(name') = Key (Rep1 $(name')) |]
+  let decName (DataD _ name _ _ _ _) = [name]
+      decName (NewtypeD _ name _ _ _ _) = [name]
+      decName _ = []
 
-  pure $ concat $ newDecs ++ concat deriveFunctors ++ deriveKeys
+  let decNames = concatMap decName newDecs
+
+  deriveClassesDecsss <- S.lift $ forM decNames $ \name -> do
+    forM derivedClasses $ \class_ ->
+      [d| deriving instance $(conT class_) $(conT name) |]
+
+  deriveClasses1Decsss <- S.lift $ forM decNames $ \name -> do
+    forM derivedClasses1 $ \class_ -> do
+      var <- newName "a"
+      [d| deriving instance ($(conT class_ `appT` varT var)) => $(conT class_) $(conT name `appT` varT var) |]
+
+  deriveKeys <- S.lift $ forM decNames $ \name ->
+    let name' = conT name
+    in
+    [d|
+      type instance Key $(name') = Key (Rep1 $(name'))
+      instance Keyed $(name') where
+        mapWithKey g fa = to1 $ mapWithKey g (from1 fa)
+      instance Adjustable $(name') where
+        adjust g k fa = mapWithKey (\k' x -> if k == k' then g x else x) fa
+    |]
+
+  -- Return whether the type is recursive, and if so to what depth
+  let isRecursive :: Type -> Q (Maybe Int)
+      isRecursive type_ =
+        let (func, args) = flattenAppTs type_
+        in
+        case (func, args) of
+          (ConT name, args)
+            | isNode $ unsuffixName name -> pure $ Just 0
+            | take 12 (rawName name) == "SpecialTuple" -> pure $ Just 0
+          (func, args) -> do
+              isFunctor <-
+                case func of
+                  ConT funcConName -> do
+                    info <- reify funcConName
+                    case info of
+                      TyConI (DataD _ _ tyvars _ _ _) | not (null tyvars) -> do
+                        instances <- reifyInstances ''Functor [unflattenAppTs func (init args)]
+                        if not $ null instances
+                           then pure True
+                           else pure False
+                      _ -> pure False
+                  ListT -> pure True
+                  TupleT n -> pure True
+                  _ -> pure False
+              if isFunctor
+                 then fmap succ <$> isRecursive (last args)
+                 else pure Nothing
+
+  deriveRecursive <- S.lift $ forM newDecsWithSpecial $ \dec -> do
+    case dec of
+      Right (origTupleTypes, tupleDec) ->
+        case tupleDec of
+          DataD cxt dataname tyvars mkind constructors deriveClauses -> do
+            let nonrecType = unflattenAppTs (TupleT (length origTupleTypes)) origTupleTypes
+            (projects, embeds) <- fmap unzip $ forM constructors $ \(NormalC conName bangTypes) -> do
+              let types = map snd bangTypes
+              project <- do
+                expArgNames <- sequence (replicate (length types) (newName "x"))
+                recursiveDepths <- forM types isRecursive
+                let pat = TupP $ map VarP expArgNames
+                let mkExpProject expArgName Nothing = varE expArgName
+                    mkExpProject expArgName (Just n) = do
+                      let fmapN 0 = [| id |]
+                          fmapN n = [| fmap . $(fmapN (n - 1)) |]
+                      (fmapN n `appE` [| project |]) `appE` varE expArgName
+                projectedArgs <- sequence $ zipWith mkExpProject expArgNames recursiveDepths
+                let exp = foldl AppE (ConE conName) projectedArgs
+                pure (pat, exp)
+              embed <- do
+                expArgNames <- sequence (replicate (length types) (newName "x"))
+                recursiveDepths <- forM types isRecursive
+                let pat = ConP conName $ map VarP expArgNames
+                let mkExpProject expArgName Nothing = varE expArgName
+                    mkExpProject expArgName (Just n) = do
+                      let fmapN 0 = [| id |]
+                          fmapN n = [| fmap . $(fmapN (n - 1)) |]
+                      (fmapN n `appE` [| embed |]) `appE` varE expArgName
+                projectedArgs <- sequence $ zipWith mkExpProject expArgNames recursiveDepths
+                let exp = TupE $ map Just projectedArgs
+                pure (pat, exp)
+              pure (project, embed)
+
+            let mkClause (pat, exp) = Clause [pat] (NormalB exp) []
+                embedDefinition = FunD (mkName "embed") $ map mkClause embeds
+                projectDefinition = FunD (mkName "project") $ map mkClause projects
+
+            typeInstanceDec <- [d| type instance RecursiveF $(pure nonrecType) = $(conT dataname) |]
+
+            pure [InstanceD Nothing [] (ConT ''Recursive `AppT` nonrecType) (typeInstanceDec ++ [embedDefinition, projectDefinition])]
+          _ -> error "baseFunctorFamily: Special tuple has unexpected declaration?"
+      Left dataDec ->
+        case dataDec of
+          TySynD dataname tyvars type_ -> pure [] -- error "baseFunctorFamily: Doesn't support type synonyms"
+          DataD cxt dataname tyvars mkind constructors deriveClauses -> do
+            let nonrecType = ConT (unsuffixName dataname)
+            (projects, embeds) <- fmap unzip $ forM constructors $ \(NormalC conName bangTypes) -> do
+              let nonrecConName = unsuffixName conName
+              let types = map snd bangTypes
+              project <- do
+                expArgNames <- sequence (replicate (length types) (newName "x"))
+                recursiveDepths <- forM types isRecursive
+                let pat = ConP nonrecConName $ map VarP expArgNames
+                let mkExpProject expArgName Nothing = varE expArgName
+                    mkExpProject expArgName (Just n) = do
+                      let fmapN 0 = [| id |]
+                          fmapN n = [| fmap . $(fmapN (n - 1)) |]
+                      (fmapN n `appE` [| project |]) `appE` varE expArgName
+                projectedArgs <- sequence $ zipWith mkExpProject expArgNames recursiveDepths
+                let exp = foldl AppE (ConE conName) projectedArgs
+                pure (pat, exp)
+              embed <- do
+                expArgNames <- sequence (replicate (length types) (newName "x"))
+                recursiveDepths <- forM types isRecursive
+                let pat = ConP conName $ map VarP expArgNames
+                let mkExpProject expArgName Nothing = varE expArgName
+                    mkExpProject expArgName (Just n) = do
+                      let fmapN 0 = [| id |]
+                          fmapN n = [| fmap . $(fmapN (n - 1)) |]
+                      (fmapN n `appE` [| embed |]) `appE` varE expArgName
+                projectedArgs <- sequence $ zipWith mkExpProject expArgNames recursiveDepths
+                let exp = foldl AppE (ConE nonrecConName) projectedArgs
+                pure (pat, exp)
+              pure (project, embed)
+
+            let mkClause (pat, exp) = Clause [pat] (NormalB exp) []
+                embedDefinition = FunD (mkName "embed") $ map mkClause embeds
+                projectDefinition = FunD (mkName "project") $ map mkClause projects
+
+            typeInstanceDec <- [d| type instance RecursiveF $(pure nonrecType) = $(conT dataname) |]
+
+            pure [InstanceD Nothing [] (ConT ''Recursive `AppT` nonrecType) (typeInstanceDec ++ [embedDefinition, projectDefinition])]
+          _ -> pure []
+
+  let concatcat = concat . concat
+  pure $ newDecs ++ concatcat deriveClassesDecsss ++ concatcat deriveClasses1Decsss ++ concat deriveKeys ++ concat deriveRecursive
