@@ -281,19 +281,10 @@ data V a = V0 (a, a)
 
 baseFunctorFamily ''Exp
 
---data X b a = X (Int, [a], (b, a))
---  deriving (Functor, Generic1)
+mkFixG
+  :: (Recursive datatype, RecursiveF datatype ~ f, Functor f)
+  => datatype -> f (Fix (RecursiveF Exp))
+mkFixG datatype = mkFix <$> project datatype
 
-  {-
-$(do
-  a <- runQ (newName "a")
-  b <- runQ (newName "b")
-  let p = AppT (AppT (AppT (TupleT 3) (ConT ''Int)) (AppT ListT (VarT a))) (AppT (AppT (TupleT 2) (VarT b)) (VarT a))
-  let (AppT (AppT (AppT _ t1) t2) t3) = p
-  (typeName, conName, dec) <- mkGTuple [''Show, ''Generic1] a [t1, t2, t3]
-  pure [dec]
-  )
-  -}
-
--- $(deriveBaseBi [''Show, ''Functor, ''Generic] (''Exp, 0, ''Dec))
--- $(deriveBaseBiFamily [''Show, ''Functor, ''Generic1, ''Foldable, ''Traversable] ''Exp)
+mkFix :: Exp -> Fix (RecursiveF Exp)
+mkFix = Fix . mkFixG
