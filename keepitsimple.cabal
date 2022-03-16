@@ -30,6 +30,7 @@ library
         Lift.Mutplate,
         Lift.Lift,
         Lift.DeepHoled,
+        Lift.DeepHoled.Instances,
         Utils,
         Ppr,
         Ppr.Lib,
