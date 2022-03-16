@@ -1,4 +1,5 @@
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ExplicitForAll #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeApplications #-}
@@ -35,6 +36,8 @@ import qualified Data.Data as DD
 
 import qualified Data.Functor.Foldable as R
 import Lift
+import Lift.DeepHoled as DH
+import Lift.DeepHoled.Instances as DH
 
 import Ppr.Lib hiding (Doc)
 import qualified Ppr.Lib
@@ -55,12 +58,6 @@ attachAnn key ann = adjustRecursiveG modify key setAnn
 
 attachAnnExp :: ExpKey -> Annotation -> AnnotatedExp -> AnnotatedExp
 attachAnnExp = attachAnn
-
-attachAnnDeepExp :: ExpDeepKey -> Annotation -> AnnotatedExp -> AnnotatedExp
-attachAnnDeepExp deepKey ann =
-  case deepKeyToShallow deepKey of
-    Nothing -> id
-    Just key -> attachAnn key ann
 
 attachAnnPat :: PatKey -> Annotation -> AnnotatedPat -> AnnotatedPat
 attachAnnPat = attachAnn
@@ -233,9 +230,9 @@ instance Ppr (a, Precedence -> Doc) where
 pprInfixExp :: AnnotatedExp -> Doc
 pprInfixExp exp@(Fix (Pair (Const mann) expf)) =
   case expf of
-    VarEF v -> pprName' Infix v
-    ConEF v -> pprName' Infix v
-    UnboundVarEF v -> pprName' Infix v
+    VarEFExp v -> pprName' Infix v
+    ConEFExp v -> pprName' Infix v
+    UnboundVarEFExp v -> pprName' Infix v
     -- This case will only ever be reached in exceptional circumstances.
     -- For example, when printing an error message in case of a malformed expression.
     _ -> text "`" <> pprExp noPrec exp <> text "`"
@@ -248,94 +245,105 @@ pprExp prec exp = R.para alg exp prec
 pprExp' :: Precedence -> (AnnotatedExp, Precedence -> Doc) -> Doc
 pprExp' prec (_, cont) = cont prec
 
+deannFExp :: forall t f a. (DH.Recursive t, f ~ DH.RecursiveF t, Functor f) => f (AnnotatedExp, a) -> t
+deannFExp = DH.embed . fmap (first (R.hoist (\(Pair _ fa) -> fa)))
+  where
+    first f (a, b) = f a
+
 pprExpF :: Precedence -> ExpF (AnnotatedExp, Precedence -> Doc) -> Doc
-pprExpF _ (VarEF v)     = pprName' Applied v
-pprExpF _ (ConEF c)     = pprName' Applied c
-pprExpF i (LitEF l)     = pprLit i l
-pprExpF i (AppEF e1 e2) = parensIf (i >= appPrec) $ pprExp' opPrec e1
+pprExpF _ (VarEFExp v)     = pprName' Applied v
+pprExpF _ (ConEFExp c)     = pprName' Applied c
+pprExpF i (LitEFExp l)     = pprLit i l
+pprExpF i (AppEFExp e1 e2) = parensIf (i >= appPrec) $ pprExp' opPrec e1
                                               <+> pprExp' appPrec e2
-pprExpF i (AppTypeEF e t)
+pprExpF i (AppTypeEFExp e t)
  = parensIf (i >= appPrec) $ pprExp' opPrec e <+> char '@' <> pprParendType t
-pprExpF _ (ParensEF e)  = parens (pprExp' noPrec e)
-pprExpF i (UInfixEF e1 op e2)
+pprExpF _ (ParensEFExp e)  = parens (pprExp' noPrec e)
+pprExpF i (UInfixEFExp e1 op e2)
  = parensIf (i > unopPrec) $ pprExp' unopPrec e1
                          <+> pprInfixExp (fst op)
                          <+> pprExp' unopPrec e2
-pprExpF i (InfixEF (Just e1) op (Just e2))
+pprExpF i (InfixEFExp (Just e1) op (Just e2))
  = parensIf (i >= opPrec) $ pprExp' opPrec e1
                         <+> pprInfixExp (fst op)
                         <+> pprExp' opPrec e2
-pprExpF _ (InfixEF me1 op me2) = parens $ pprMaybeExp noPrec me1
+pprExpF _ (InfixEFExp me1 op me2) = parens $ pprMaybeExp noPrec me1
                                     <+> pprInfixExp (fst op)
                                     <+> pprMaybeExp noPrec me2
-pprExpF i (LamEF [] e) = pprExp' i e -- #13856
-pprExpF i (LamEF ps e) = parensIf (i > noPrec) $ char '\\' <> hsep (map (pprPatNoAnn appPrec) ps)
+pprExpF i (LamEFExp [] e) = pprExp' i e -- #13856
+pprExpF i (LamEFExp ps e) = parensIf (i > noPrec) $ char '\\' <> hsep (map (pprPatNoAnn appPrec . deannFExp) ps)
                                            <+> text "->" <+> ppr e
-pprExpF i (LamCaseEF ms) = parensIf (i > noPrec)
-                       $ text "\\case" $$ nest nestDepth (ppr ms)
-pprExpF i (TupEF es)
+pprExpF i (LamCaseEFExp ms) = parensIf (i > noPrec)
+                       $ text "\\case" $$ nest nestDepth (ppr $ map (deannFExp @Match) ms)
+pprExpF i (TupEFExp es)
   | [Just e] <- es
-  = pprExp i (Fix $ Pair (Const Nothing) $ AppEF (Fix $ Pair (Const Nothing) (ConEF (tupleDataName 1))) (fst e))
+  = pprExp i (Fix $ Pair (Const Nothing) $ AppEFExp (Fix $ Pair (Const Nothing) (ConEFExp (tupleDataName 1))) (fst e))
   | otherwise
   = parens (commaSepWith (pprMaybeExp noPrec) es)
-pprExpF _ (UnboxedTupEF es) = hashParens (commaSepWith (pprMaybeExp noPrec) es)
-pprExpF _ (UnboxedSumEF e alt arity) = unboxedSumBars (ppr e) alt arity
+pprExpF _ (UnboxedTupEFExp es) = hashParens (commaSepWith (pprMaybeExp noPrec) es)
+pprExpF _ (UnboxedSumEFExp e alt arity) = unboxedSumBars (ppr e) alt arity
 -- Nesting in Cond is to avoid potential problems in do statements
-pprExpF i (CondEF guard true false)
+pprExpF i (CondEFExp guard true false)
  = parensIf (i > noPrec) $ sep [text "if"   <+> ppr guard,
                        nest 1 $ text "then" <+> ppr true,
                        nest 1 $ text "else" <+> ppr false]
-pprExpF i (MultiIfEF alts)
+pprExpF i (MultiIfEFExp alts)
   = parensIf (i > noPrec) $ vcat $
       case alts of
         []            -> [text "if {}"]
-        (alt : alts') -> text "if" <+> pprGuarded arrow (fmap (deann . fst) alt)
-                         : map (nest 3 . pprGuarded arrow) (fmap (deann . fst) <$> alts')
-pprExpF i (LetEF ds_ e) = parensIf (i > noPrec) $ text "let" <+> pprDecs ds_
+        (alt : alts') -> text "if" <+> pprGuarded arrow (deannST alt)
+                         : map (nest 3 . pprGuarded arrow) (deannST <$> alts')
+  where
+    deannST (ST2_0 guardedFExp exp) = (deannFExp guardedFExp, deann $ fst exp)
+pprExpF i (LetEFExp ds_ e) = parensIf (i > noPrec) $ text "let" <+> pprDecs (map (deannFExp @Dec) ds_)
                                              $$ text " in" <+> ppr e
   where
     pprDecs []  = empty
     pprDecs [d] = ppr d
     pprDecs ds  = braces (semiSep ds)
 
-pprExpF i (CaseEF e ms)
+pprExpF i (CaseEFExp e ms)
  = parensIf (i > noPrec) $ text "case" <+> ppr e <+> text "of"
-                        $$ nest nestDepth (ppr ms)
-pprExpF i (DoEF ss_) = parensIf (i > noPrec) $ text "do" <+> pprStms ss_
+                        $$ nest nestDepth (ppr $ map (deannFExp @Match) ms)
+pprExpF i (DoEFExp ss_) = parensIf (i > noPrec) $ text "do" <+> pprStms (map (deannFExp @Stmt) ss_)
   where
     pprStms []  = empty
     pprStms [s] = ppr s
     pprStms ss  = braces (semiSep ss)
-pprExpF i (MDoEF ss_) = parensIf (i > noPrec) $ text "mdo" <+> pprStms ss_
+pprExpF i (MDoEFExp ss_) = parensIf (i > noPrec) $ text "mdo" <+> pprStms (map (deannFExp @Stmt) ss_)
   where
     pprStms []  = empty
     pprStms [s] = ppr s
     pprStms ss  = braces (semiSep ss)
 
-pprExpF _ (CompEF []) = text "<<Empty CompExp>>"
+pprExpF _ (CompEFExp []) = text "<<Empty CompExp>>"
 -- This will probably break with fixity declarations - would need a ';'
-pprExpF _ (CompEF ss) =
+pprExpF _ (CompEFExp ss) =
     if null ss'
        -- If there are no statements in a list comprehension besides the last
        -- one, we simply treat it like a normal list.
-       then text "[" <> ppr s <> text "]"
-       else text "[" <> ppr s
+       then text "[" <> ppr (deannFExp @Stmt s) <> text "]"
+       else text "[" <> ppr (deannFExp @Stmt s)
         <+> bar
-        <+> commaSep ss'
+        <+> commaSep (map (deannFExp @Stmt) ss')
          <> text "]"
   where s = last ss
         ss' = init ss
-pprExpF _ (ArithSeqEF d) = ppr d
-pprExpF _ (ListEF es) = brackets (commaSep es)
-pprExpF i (SigEF e t) = parensIf (i > noPrec) $ pprExp' sigPrec e
+pprExpF _ (ArithSeqEFExp d) = ppr (deannFExp @Range d)
+pprExpF _ (ListEFExp es) = brackets (commaSep es)
+pprExpF i (SigEFExp e t) = parensIf (i > noPrec) $ pprExp' sigPrec e
                                           <+> dcolon <+> ppr t
-pprExpF _ (RecConEF nm fs) = ppr nm <> braces (pprFields fs)
-pprExpF _ (RecUpdEF e fs) = pprExp' appPrec e <> braces (pprFields fs)
-pprExpF i (StaticEF e) = parensIf (i >= appPrec) $
+pprExpF _ (RecConEFExp nm fs) = ppr nm <> braces (pprFields $ map fieldExpToTuple fs)
+  where
+    fieldExpToTuple (FieldExpFExp name exp) = (name, exp)
+pprExpF _ (RecUpdEFExp e fs) = pprExp' appPrec e <> braces (pprFields $ map fieldExpToTuple fs)
+  where
+    fieldExpToTuple (FieldExpFExp name exp) = (name, exp)
+pprExpF i (StaticEFExp e) = parensIf (i >= appPrec) $
                          text "static"<+> pprExp' appPrec e
-pprExpF _ (UnboundVarEF v) = pprName' Applied v
-pprExpF _ (LabelEF s) = text "#" <> text s
-pprExpF _ (ImplicitParamVarEF n) = text ('?' : n)
+pprExpF _ (UnboundVarEFExp v) = pprName' Applied v
+pprExpF _ (LabelEFExp s) = text "#" <> text s
+pprExpF _ (ImplicitParamVarEFExp n) = text ('?' : n)
 
 pprFields :: [(Name,(AnnotatedExp, Precedence -> Doc))] -> Doc
 pprFields = sep . punctuate comma . map (\(s,e) -> ppr s <+> equals <+> ppr e)

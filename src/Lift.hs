@@ -13,8 +13,8 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
@@ -47,14 +47,15 @@ import "recursion-schemes" Data.Functor.Foldable qualified as R
 import "recursion-schemes" Data.Functor.Foldable.TH qualified as R
 
 import Lift.Lift
---import Lift.BiKey
-import Lift.DeepHoled
+import Lift.DeepHoled.Instances
+import Lift.DeepHoled qualified as DH
 
-R.makeBaseFunctor ''Exp
+--R.makeBaseFunctor ''Exp
 R.makeBaseFunctor ''Pat
 
-deriveShow1 ''ExpF
 deriveShow1 ''PatF
+--deriveShow1 ''ExpF
+type ExpF = ExpFExp
 
 deriving instance Show a => Show (PatF a)
 deriving instance Generic1 PatF
@@ -64,72 +65,8 @@ instance Keyed PatF where
 instance Adjustable PatF where
   adjust g k fa = mapWithKey (\k' x -> if k == k' then g x else x) fa
 
-deriving instance Show a => Show (ExpF a)
-deriving instance Generic1 ExpF
-type instance Key ExpF = Key (Rep1 ExpF)
-instance Keyed ExpF where
-  mapWithKey g fa = to1 $ mapWithKey g (from1 fa)
-instance Adjustable ExpF where
-  adjust g k fa = mapWithKey (\k' x -> if k == k' then g x else x) fa
-
-data ExpAltKey = EALet Int
-  deriving (Show, Lift)
-type ExpDeepKey = [Either ExpAltKey (Key ExpF)]
-
-appendAlt :: ExpDeepKey -> ExpAltKey -> ExpDeepKey
-appendAlt deep addendum = deep ++ [Left addendum]
-
-mkLetIndex :: (ExpDeepKey, Int) -> ExpDeepKey
-mkLetIndex (expKey, ix) = appendAlt expKey (EALet ix)
-
-appendShallow :: ExpDeepKey -> ExpKey -> ExpDeepKey
-appendShallow deep addendum = deep ++ map Right addendum
-
-deepKeyToShallow :: ExpDeepKey -> Maybe ExpKey
-deepKeyToShallow = traverse (either (const Nothing) Just)
-
-modExpByDeepKeyA :: Applicative m => ExpDeepKey -> (Exp -> m Exp) -> Exp -> m Exp
-modExpByDeepKeyA [] f = f
-modExpByDeepKeyA (Right normalKey : rest) f =
-  modExpByKeyA [normalKey] $ modExpByDeepKeyA rest f
-modExpByDeepKeyA (Left altKey : rest) f =
-  modExpByAltKeyA altKey $ modExpByDeepKeyA rest f
-
-modAnnExpByDeepKeyA :: Applicative m => ExpDeepKey -> (ExpWithDeepKey -> m ExpWithDeepKey) -> ExpWithDeepKey -> m ExpWithDeepKey
-modAnnExpByDeepKeyA [] f exp = f exp
-modAnnExpByDeepKeyA (Right normalKey:rest) f exp =
-  let Fix (Pair keyConst expfa) = exp
-      modifyWithWitness (_, a) = (modAnnExpByDeepKeyA rest f a, a)
-      pureWithWitness a = (pure a, a)
-  in
-  fmap (Fix . Pair keyConst)
-    $ sequenceA
-    $ fmap fst
-    $ adjust modifyWithWitness normalKey
-    $ fmap pureWithWitness expfa
-modAnnExpByDeepKeyA (Left altKey:rest) f exp =
-  let Fix (Pair (Const deepKey) _) = exp
-      subModify exp =
-        fmap deann $
-          modAnnExpByDeepKeyA rest f $
-            annDeepKeys (deepKey ++ [Left altKey]) exp
-  in
-  fmap (annDeepKeys deepKey) $ modExpByAltKeyA altKey subModify (deann exp)
-
-modAnnExpByDeepKey :: ExpDeepKey -> (ExpWithDeepKey -> ExpWithDeepKey) -> ExpWithDeepKey -> ExpWithDeepKey
-modAnnExpByDeepKey key = L.over $ modAnnExpByDeepKeyA key
-
-modExpByAltKeyA :: Applicative m => ExpAltKey -> (Exp -> m Exp) -> Exp -> m Exp
-modExpByAltKeyA (EALet idx) f (LetE decls body) = do
-  LetE <$> zipWithM modifyOnlyMatching [0..] decls <*> pure body
-  where
-    modifyOnlyMatching ii (ValD pat (NormalB exp) wheres) -- Ignore guarded values
-      | ii == idx = ValD pat <$> (NormalB <$> f exp) <*> pure wheres
-    modifyOnlyMatching _ decl = pure decl
-modExpByAltKeyA _ _ exp = pure exp
-
 type PatKey = [Key PatF]
-type ExpKey = [Key ExpF]
+type ExpKey = [Key ExpFExp]
 
 modPatByKey :: PatKey -> (Pat -> Pat) -> Pat -> Pat
 modPatByKey = adjustRecursive
@@ -205,11 +142,22 @@ adjustRecursiveGGA reshape adjust (k:rest) f t =
     $ fmap pureWithWitness
     $ R.project t
 
-listifyKey :: (a, b) -> ([a], b)
-listifyKey = first (\x -> [x])
+  {-
+class RecKeyable t where
+  type RecKey t :: *
+  type RecKeyF t (f :: (* -> *) -> * -> *) :: * -> *
 
-prependKey :: a -> ([a], b) -> ([a], b)
-prependKey a = first (a :)
+type RecAnn t ann = Fix (RecKeyF t (Product (Const ann)))
+type RecKeyed t = RecAnn t (RecKey t)
+
+instance RecKeyable Exp where
+  type RecKey Exp = [Key ExpFExp]
+  type RecKeyF Exp f = f ExpFExp
+
+instance RecKeyable Pat where
+  type RecKey Pat = [Key PatF]
+  type RecKeyF Pat f = f PatF
+  -}
 
 type Ann a f = Product (Const a) f
 type With t a = Fix (WithF t a)
@@ -227,16 +175,7 @@ annKeys exp = R.ana go ([], exp)
 annOne :: a -> f (Fix (Ann a f)) -> Fix (Ann a f)
 annOne a f = Fix (Pair (Const a) f)
 
-type ExpWithDeepKey = With Exp ExpDeepKey
-
-annDeepKeys :: ExpDeepKey -> Exp -> ExpWithDeepKey
-annDeepKeys precedingKey exp = R.hoist f $ annKeys exp
-  where
-    f :: forall a. Ann ExpKey ExpF a -> Ann ExpDeepKey ExpF a
-    f (Pair (Const key) expfa) = Pair (Const (appendShallow precedingKey key)) expfa
-
-autoAnnReplace :: ExpWithDeepKey -> Exp -> ExpWithDeepKey
-autoAnnReplace (Fix (Pair (Const deepKey) _)) replacement = annDeepKeys deepKey replacement
+type ExpWithKey = With Exp ExpKey
 
 deann :: (R.Corecursive t, f ~ R.Base t) => Fix (Ann a f) -> t
 deann = R.hoist (\(Pair _ tf) -> tf)
@@ -265,9 +204,10 @@ replaceName from to = transformAllNames (\name -> if name == from then to else n
 replaceName' :: (DD.Data from, Biplate from Exp) => Name -> Exp -> from -> from
 replaceName' from to = transformBi (\name -> if name == VarE from then to else name)
 
-deriving instance DD.Data a => DD.Data (ExpF a)
-deriving instance DD.Data a => DD.Data (PatF a)
+--deriving instance DD.Data a => DD.Data (ExpF a)
+--deriving instance DD.Data a => DD.Data (PatF a)
 
+  {-
 data T a = T0 Int (Int, a) (U [a]) (T a) | T1 a
   deriving (Functor, Generic1)
 data U a = U0 (T a) | U1 a
@@ -278,13 +218,10 @@ data Mk3 a b c = Mk3 a b c
 
 data V a = V0 (a, a)
   deriving (Show, Functor)
+  -}
 
-baseFunctorFamily ''Exp
-
-mkFixG
-  :: (Recursive datatype, RecursiveF datatype ~ f, Functor f)
-  => datatype -> f (Fix (RecursiveF Exp))
-mkFixG datatype = mkFix <$> project datatype
-
-mkFix :: Exp -> Fix (RecursiveF Exp)
-mkFix = Fix . mkFixG
+type instance R.Base Exp = DH.RecursiveF Exp
+instance R.Recursive Exp where
+  project = DH.project
+instance R.Corecursive Exp where
+  embed = DH.embed

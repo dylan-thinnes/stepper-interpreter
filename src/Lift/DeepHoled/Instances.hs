@@ -20,6 +20,9 @@ import Data.Fix
 -- deriving-compat
 import Text.Show.Deriving
 
+-- recursion-schemes
+import qualified Data.Functor.Foldable as R
+
 baseFunctorFamily ''Exp
 
 deriveShow1 ''ExpFExp

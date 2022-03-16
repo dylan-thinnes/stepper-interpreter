@@ -153,6 +153,7 @@ baseFunctorFamily target = runIdentifierMT $ do
 
   let suffixName name = mkName $ rawName name ++ "F" ++ rawName target
   let unsuffixName name = mkName $ reverse $ drop (length ("F" ++ rawName target)) $ reverse $ rawName name
+
   mGraph <- S.lift $ connectedTo target <$> depGraphs [target]
   let graph = map (\(name, deps) -> (rawName name, deps)) $ dgToList $ fromJust mGraph
 
