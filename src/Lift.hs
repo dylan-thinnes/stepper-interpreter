@@ -47,8 +47,8 @@ import "recursion-schemes" Data.Functor.Foldable qualified as R
 import "recursion-schemes" Data.Functor.Foldable.TH qualified as R
 
 import Lift.Lift
-import Lift.DeepHoled.Instances
-import Lift.DeepHoled qualified as DH
+import Lift.DeepRecursive.Instances
+import Lift.DeepRecursive qualified as DH
 
 --R.makeBaseFunctor ''Exp
 R.makeBaseFunctor ''Pat
@@ -220,7 +220,7 @@ data V a = V0 (a, a)
   deriving (Show, Functor)
   -}
 
-type instance R.Base Exp = DH.RecursiveF Exp
+type instance R.Base Exp = DH.DeepRecursiveF Exp
 instance R.Recursive Exp where
   project = DH.project
 instance R.Corecursive Exp where

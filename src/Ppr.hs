@@ -36,8 +36,8 @@ import qualified Data.Data as DD
 
 import qualified Data.Functor.Foldable as R
 import Lift
-import Lift.DeepHoled as DH
-import Lift.DeepHoled.Instances as DH
+import Lift.DeepRecursive as DR
+import Lift.DeepRecursive.Instances as DR
 
 import Ppr.Lib hiding (Doc)
 import qualified Ppr.Lib
@@ -245,8 +245,8 @@ pprExp prec exp = R.para alg exp prec
 pprExp' :: Precedence -> (AnnotatedExp, Precedence -> Doc) -> Doc
 pprExp' prec (_, cont) = cont prec
 
-deannFExp :: forall t f a. (DH.Recursive t, f ~ DH.RecursiveF t, Functor f) => f (AnnotatedExp, a) -> t
-deannFExp = DH.embed . fmap (first (R.hoist (\(Pair _ fa) -> fa)))
+deannDeepRec :: forall t f a. (DR.DeepRecursive t, f ~ DR.DeepRecursiveF t, Functor f) => f (AnnotatedExp, a) -> t
+deannDeepRec = DR.embed . fmap (first (R.hoist (\(Pair _ fa) -> fa)))
   where
     first f (a, b) = f a
 
@@ -271,10 +271,10 @@ pprExpF _ (InfixEFExp me1 op me2) = parens $ pprMaybeExp noPrec me1
                                     <+> pprInfixExp (fst op)
                                     <+> pprMaybeExp noPrec me2
 pprExpF i (LamEFExp [] e) = pprExp' i e -- #13856
-pprExpF i (LamEFExp ps e) = parensIf (i > noPrec) $ char '\\' <> hsep (map (pprPatNoAnn appPrec . deannFExp) ps)
+pprExpF i (LamEFExp ps e) = parensIf (i > noPrec) $ char '\\' <> hsep (map (pprPatNoAnn appPrec . deannDeepRec) ps)
                                            <+> text "->" <+> ppr e
 pprExpF i (LamCaseEFExp ms) = parensIf (i > noPrec)
-                       $ text "\\case" $$ nest nestDepth (ppr $ map (deannFExp @Match) ms)
+                       $ text "\\case" $$ nest nestDepth (ppr $ map (deannDeepRec @Match) ms)
 pprExpF i (TupEFExp es)
   | [Just e] <- es
   = pprExp i (Fix $ Pair (Const Nothing) $ AppEFExp (Fix $ Pair (Const Nothing) (ConEFExp (tupleDataName 1))) (fst e))
@@ -294,8 +294,8 @@ pprExpF i (MultiIfEFExp alts)
         (alt : alts') -> text "if" <+> pprGuarded arrow (deannST alt)
                          : map (nest 3 . pprGuarded arrow) (deannST <$> alts')
   where
-    deannST (ST2_0 guardedFExp exp) = (deannFExp guardedFExp, deann $ fst exp)
-pprExpF i (LetEFExp ds_ e) = parensIf (i > noPrec) $ text "let" <+> pprDecs (map (deannFExp @Dec) ds_)
+    deannST (ST2_0 guardedFExp exp) = (deannDeepRec guardedFExp, deann $ fst exp)
+pprExpF i (LetEFExp ds_ e) = parensIf (i > noPrec) $ text "let" <+> pprDecs (map (deannDeepRec @Dec) ds_)
                                              $$ text " in" <+> ppr e
   where
     pprDecs []  = empty
@@ -304,13 +304,13 @@ pprExpF i (LetEFExp ds_ e) = parensIf (i > noPrec) $ text "let" <+> pprDecs (map
 
 pprExpF i (CaseEFExp e ms)
  = parensIf (i > noPrec) $ text "case" <+> ppr e <+> text "of"
-                        $$ nest nestDepth (ppr $ map (deannFExp @Match) ms)
-pprExpF i (DoEFExp ss_) = parensIf (i > noPrec) $ text "do" <+> pprStms (map (deannFExp @Stmt) ss_)
+                        $$ nest nestDepth (ppr $ map (deannDeepRec @Match) ms)
+pprExpF i (DoEFExp ss_) = parensIf (i > noPrec) $ text "do" <+> pprStms (map (deannDeepRec @Stmt) ss_)
   where
     pprStms []  = empty
     pprStms [s] = ppr s
     pprStms ss  = braces (semiSep ss)
-pprExpF i (MDoEFExp ss_) = parensIf (i > noPrec) $ text "mdo" <+> pprStms (map (deannFExp @Stmt) ss_)
+pprExpF i (MDoEFExp ss_) = parensIf (i > noPrec) $ text "mdo" <+> pprStms (map (deannDeepRec @Stmt) ss_)
   where
     pprStms []  = empty
     pprStms [s] = ppr s
@@ -322,14 +322,14 @@ pprExpF _ (CompEFExp ss) =
     if null ss'
        -- If there are no statements in a list comprehension besides the last
        -- one, we simply treat it like a normal list.
-       then text "[" <> ppr (deannFExp @Stmt s) <> text "]"
-       else text "[" <> ppr (deannFExp @Stmt s)
+       then text "[" <> ppr (deannDeepRec @Stmt s) <> text "]"
+       else text "[" <> ppr (deannDeepRec @Stmt s)
         <+> bar
-        <+> commaSep (map (deannFExp @Stmt) ss')
+        <+> commaSep (map (deannDeepRec @Stmt) ss')
          <> text "]"
   where s = last ss
         ss' = init ss
-pprExpF _ (ArithSeqEFExp d) = ppr (deannFExp @Range d)
+pprExpF _ (ArithSeqEFExp d) = ppr (deannDeepRec @Range d)
 pprExpF _ (ListEFExp es) = brackets (commaSep es)
 pprExpF i (SigEFExp e t) = parensIf (i > noPrec) $ pprExp' sigPrec e
                                           <+> dcolon <+> ppr t

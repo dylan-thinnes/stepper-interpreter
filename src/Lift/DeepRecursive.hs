@@ -17,7 +17,7 @@
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-module Lift.DeepHoled where
+module Lift.DeepRecursive where
 
 import "base" Control.Monad
 import "base" Data.Char
@@ -131,10 +131,10 @@ runIdentifierMT ma = S.evalStateT ma ([], 0)
 runIdentifierM :: IdentifierMT k Identity a -> a
 runIdentifierM = runIdentity . runIdentifierMT
 
-class Recursive datatype where
-  type RecursiveF datatype :: * -> *
-  project :: datatype -> RecursiveF datatype Exp
-  embed :: RecursiveF datatype Exp -> datatype
+class DeepRecursive datatype where
+  type DeepRecursiveF datatype :: * -> *
+  project :: datatype -> DeepRecursiveF datatype Exp
+  embed :: DeepRecursiveF datatype Exp -> datatype
 
 replaceTyVar :: Name -> Name -> Type -> Type
 replaceTyVar target replacement = transformBi $ \type_ ->
@@ -362,9 +362,9 @@ baseFunctorFamily target = runIdentifierMT $ do
                 embedDefinition = FunD (mkName "embed") $ map mkClause embeds
                 projectDefinition = FunD (mkName "project") $ map mkClause projects
 
-            typeInstanceDec <- [d| type instance RecursiveF $(pure nonrecType) = $(conT dataname) |]
+            typeInstanceDec <- [d| type instance DeepRecursiveF $(pure nonrecType) = $(conT dataname) |]
 
-            pure [InstanceD Nothing [] (ConT ''Recursive `AppT` nonrecType) (typeInstanceDec ++ [embedDefinition, projectDefinition])]
+            pure [InstanceD Nothing [] (ConT ''DeepRecursive `AppT` nonrecType) (typeInstanceDec ++ [embedDefinition, projectDefinition])]
           _ -> error "baseFunctorFamily: Special tuple has unexpected declaration?"
       Left dataDec ->
         case dataDec of
@@ -404,9 +404,9 @@ baseFunctorFamily target = runIdentifierMT $ do
                 embedDefinition = FunD (mkName "embed") $ map mkClause embeds
                 projectDefinition = FunD (mkName "project") $ map mkClause projects
 
-            typeInstanceDec <- [d| type instance RecursiveF $(pure nonrecType) = $(conT dataname) |]
+            typeInstanceDec <- [d| type instance DeepRecursiveF $(pure nonrecType) = $(conT dataname) |]
 
-            pure [InstanceD Nothing [] (ConT ''Recursive `AppT` nonrecType) (typeInstanceDec ++ [embedDefinition, projectDefinition])]
+            pure [InstanceD Nothing [] (ConT ''DeepRecursive `AppT` nonrecType) (typeInstanceDec ++ [embedDefinition, projectDefinition])]
           _ -> pure []
 
   let concatcat = concat . concat

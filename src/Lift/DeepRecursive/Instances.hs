@@ -6,9 +6,9 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE StandaloneDeriving #-}
-module Lift.DeepHoled.Instances where
+module Lift.DeepRecursive.Instances where
 
-import Lift.DeepHoled
+import Lift.DeepRecursive
 import Lift.Lift
 
 -- template-haskell
@@ -41,9 +41,9 @@ deriveShow1 ''PragmaFExp
 deriveShow1 ''PatSynDirFExp
 
 mkFixG
-  :: (Recursive datatype, RecursiveF datatype ~ f, Functor f)
-  => datatype -> f (Fix (RecursiveF Exp))
+  :: (DeepRecursive datatype, DeepRecursiveF datatype ~ f, Functor f)
+  => datatype -> f (Fix (DeepRecursiveF Exp))
 mkFixG datatype = mkFix <$> project datatype
 
-mkFix :: Exp -> Fix (RecursiveF Exp)
+mkFix :: Exp -> Fix (DeepRecursiveF Exp)
 mkFix = Fix . mkFixG
