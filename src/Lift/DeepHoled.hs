@@ -1,4 +1,5 @@
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DeriveTraversable #-}
@@ -140,6 +141,10 @@ replaceTyVar target replacement = transformBi $ \type_ ->
   case type_ of
     VarT varName | varName == target -> VarT replacement
     _ -> type_
+
+newtype GenericKey f = GenericKey { unGenericKey :: Key (Rep1 f) }
+deriving instance Eq (Key (Rep1 f)) => Eq (GenericKey f)
+deriving instance Show (Key (Rep1 f)) => Show (GenericKey f)
 
 baseFunctorFamily :: Name -> Q [Dec]
 baseFunctorFamily target = runIdentifierMT $ do
@@ -283,9 +288,9 @@ baseFunctorFamily target = runIdentifierMT $ do
     let name' = conT name
     in
     [d|
-      type instance Key $(name') = Key (Rep1 $(name'))
+      type instance Key $(name') = GenericKey (Rep1 $(name'))
       instance Keyed $(name') where
-        mapWithKey g fa = to1 $ mapWithKey g (from1 fa)
+        mapWithKey g fa = to1 $ mapWithKey (g . GenericKey) (from1 fa)
       instance Adjustable $(name') where
         adjust g k fa = mapWithKey (\k' x -> if k == k' then g x else x) fa
     |]
