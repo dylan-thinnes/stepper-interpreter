@@ -396,7 +396,7 @@ nameToFullAndRaw :: Name -> (EnvName, EnvName)
 nameToFullAndRaw fullName@(Name (OccName rawName) _) = (FullName fullName, RawName rawName)
 
 defaultEnvironment :: Environment
-defaultEnvironment = mkEnvironment [('(+), plus), ('(*), times), ('seq, Seq)]
+defaultEnvironment = mkEnvironment [('(+), plus), ('(*), times), ('(-), minus), ('seq, Seq)]
   where
     plus = FunctionDeclaration $ CustomFD 2 (CustomShow "(+)" handler')
       where
@@ -411,9 +411,19 @@ defaultEnvironment = mkEnvironment [('(+), plus), ('(*), times), ('seq, Seq)]
     times = FunctionDeclaration $ CustomFD 2 (CustomShow "(*)" handler')
       where
         handler' [a, b] = handler a b
-        handler' _ = error "defaultEnvironment/plus/handler': wrong number of arguments given to (+), this shouldn't happen!"
+        handler' _ = error "defaultEnvironment/times/handler': wrong number of arguments given to (+), this shouldn't happen!"
 
         handler (LitE (IntegerL a)) (LitE (IntegerL b)) = Right $ LitE $ IntegerL $ a * b
+        handler a@(LitE _) b@(LitE _) = error $ unwords ["Incompatible lits", show a, show b, "supplied"]
+        handler (LitE _) _ = Left (1, NeedsReduction ([], []))
+        handler _ _ = Left (0, NeedsReduction ([], []))
+
+    minus = FunctionDeclaration $ CustomFD 2 (CustomShow "(*)" handler')
+      where
+        handler' [a, b] = handler a b
+        handler' _ = error "defaultEnvironment/minus/handler': wrong number of arguments given to (+), this shouldn't happen!"
+
+        handler (LitE (IntegerL a)) (LitE (IntegerL b)) = Right $ LitE $ IntegerL $ a - b
         handler a@(LitE _) b@(LitE _) = error $ unwords ["Incompatible lits", show a, show b, "supplied"]
         handler (LitE _) _ = Left (1, NeedsReduction ([], []))
         handler _ _ = Left (0, NeedsReduction ([], []))
